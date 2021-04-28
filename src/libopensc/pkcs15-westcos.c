@@ -43,11 +43,9 @@ static int sc_pkcs15emu_westcos_init(sc_pkcs15_card_t * p15card)
 	r = sc_select_file(card, &path, NULL);
 	if (r)
 		goto out;
-	if (p15card->tokeninfo->label != NULL)
-		free(p15card->tokeninfo->label);
+	free(p15card->tokeninfo->label);
 	p15card->tokeninfo->label = strdup("westcos");
-	if (p15card->tokeninfo->manufacturer_id != NULL)
-		free(p15card->tokeninfo->manufacturer_id);
+	free(p15card->tokeninfo->manufacturer_id);
 	p15card->tokeninfo->manufacturer_id = strdup("CEV");
 
 	/* get serial number */
@@ -57,8 +55,7 @@ static int sc_pkcs15emu_westcos_init(sc_pkcs15_card_t * p15card)
 	r = sc_bin_to_hex(serial.value, serial.len, buf, sizeof(buf), 0);
 	if (r)
 		goto out;
-	if (p15card->tokeninfo->serial_number != NULL)
-		free(p15card->tokeninfo->serial_number);
+	free(p15card->tokeninfo->serial_number);
 	p15card->tokeninfo->serial_number = strdup(buf);
 	sc_format_path("AAAA", &path);
 	r = sc_select_file(card, &path, NULL);
@@ -127,19 +124,18 @@ static int sc_pkcs15emu_westcos_init(sc_pkcs15_card_t * p15card)
 		struct sc_pkcs15_pubkey_info pubkey_info;
 		struct sc_pkcs15_object pubkey_obj;
 		struct sc_pkcs15_pubkey *pkey = NULL;
+		sc_pkcs15_cert_t *cert = NULL;
+
 		memset(&cert_info, 0, sizeof(cert_info));
 		memset(&cert_obj, 0, sizeof(cert_obj));
 		cert_info.id.len = 1;
 		cert_info.id.value[0] = 0x45;
 		cert_info.authority = 0;
 		cert_info.path = path;
-		r = sc_pkcs15_read_certificate(p15card, &cert_info,
-					       (sc_pkcs15_cert_t
-						**) (&cert_obj.data));
+		r = sc_pkcs15_read_certificate(p15card, &cert_info, &cert);
+		cert_obj.data = (void *) cert;
 		if (!r) {
-			sc_pkcs15_cert_t *cert =
-			    (sc_pkcs15_cert_t *) (cert_obj.data);
-			strlcpy(cert_obj.label, "User certificat",
+			strlcpy(cert_obj.label, "User certificate",
 				sizeof(cert_obj.label));
 			cert_obj.flags = SC_PKCS15_CO_FLAG_MODIFIABLE;
 			r = sc_pkcs15emu_add_x509_cert(p15card, &cert_obj,

@@ -552,7 +552,9 @@ gpk_select_id(sc_card_t *card, int kind, unsigned int fid,
 			cp->len = 0;
 			/* fallthru */
 		case GPK_SEL_DF:
-			assert(cp->len + 1 <= SC_MAX_PATH_SIZE / 2);
+			if (cp->len + 1 > SC_MAX_PATH_SIZE / 2) {
+				return SC_ERROR_INTERNAL;
+			}
 			path = (unsigned short int *) cp->value;
 			path[cp->len++] = fid;
 		}
@@ -749,8 +751,10 @@ gpk_compute_crycks(sc_card_t *card, sc_apdu_t *apdu,
 	block[len++] = apdu->p1;
 	block[len++] = apdu->p2;
 	block[len++] = apdu->lc + 3;
-	if ((i = apdu->datalen) + len > sizeof(block))
+	if (apdu->datalen + len > sizeof(block))
 		i = sizeof(block) - len;
+	else
+		i = apdu->datalen;
 	memcpy(block+len, apdu->data, i);
 	len += i;
 
@@ -1793,7 +1797,10 @@ gpk_pin_cmd(sc_card_t *card, struct sc_pin_cmd_data *data, int *tries_left)
 
 	data->apdu = &apdu;
 
-	return iso_ops->pin_cmd(card, data, tries_left);
+	r = iso_ops->pin_cmd(card, data, tries_left);
+
+	data->apdu = NULL;
+	return r;
 }
 
 /*

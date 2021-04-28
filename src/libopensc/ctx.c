@@ -128,6 +128,10 @@ static const struct _sc_driver_entry internal_card_drivers[] = {
 	{ "atrust-acos",(void *(*)(void)) sc_get_atrust_acos_driver },
 	{ "westcos",	(void *(*)(void)) sc_get_westcos_driver },
 	{ "esteid2018",	(void *(*)(void)) sc_get_esteid2018_driver },
+	{ "idprime",	(void *(*)(void)) sc_get_idprime_driver },
+#if defined(ENABLE_SM) && defined(ENABLE_OPENPACE)
+	{ "edo",        (void *(*)(void)) sc_get_edo_driver },
+#endif
 
 /* Here should be placed drivers that need some APDU transactions in the
  * driver's `match_card()` function. */
@@ -1004,7 +1008,16 @@ int sc_get_cache_dir(sc_context_t *ctx, char *buf, size_t bufsize)
 	}
 
 #ifndef _WIN32
-	cache_dir = ".eid/cache";
+#ifdef __APPLE__
+	cache_dir = getenv("Caches");
+#else
+	cache_dir = getenv("XDG_CACHE_HOME");
+#endif
+	if (cache_dir != NULL && cache_dir[0] != '\0') {
+		snprintf(buf, bufsize, "%s/%s", cache_dir, "opensc");
+		return SC_SUCCESS;
+	}
+	cache_dir = ".cache/opensc";
 	homedir = getenv("HOME");
 #else
 	cache_dir = "eid-cache";
@@ -1016,7 +1029,7 @@ int sc_get_cache_dir(sc_context_t *ctx, char *buf, size_t bufsize)
 		homedir = temp_path;
 	}
 #endif
-	if (homedir == NULL)
+	if (homedir == NULL || homedir[0] == '\0')
 		return SC_ERROR_INTERNAL;
 	if (snprintf(buf, bufsize, "%s/%s", homedir, cache_dir) < 0)
 		return SC_ERROR_BUFFER_TOO_SMALL;

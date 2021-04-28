@@ -54,6 +54,7 @@
 #endif
 #include "iso7816.h"
 #include "card-cac-common.h"
+#include "pkcs15.h"
 
 /*
  *  CAC hardware and APDU constants
@@ -104,6 +105,8 @@
 #define CAC_ACR_APPLET_OBJECT         0x10
 #define CAC_ACR_AMP                   0x20
 #define CAC_ACR_SERVICE               0x21
+
+#define CAC_MAX_CCC_DEPTH             16
 
 /* hardware data structures (returned in the CCC) */
 /* part of the card_url */
@@ -621,15 +624,6 @@ done:
 	LOG_FUNC_RETURN(card->ctx, r);
 }
 
-/* CAC driver is read only */
-static int cac_write_binary(sc_card_t *card, unsigned int idx,
-		const u8 *buf, size_t count, unsigned long flags)
-{
-
-	SC_FUNC_CALLED(card->ctx, SC_LOG_DEBUG_VERBOSE);
-	LOG_FUNC_RETURN(card->ctx, SC_ERROR_NOT_SUPPORTED);
-}
-
 /* initialize getting a list and return the number of elements in the list */
 static int cac_get_init_and_get_count(list_t *list, cac_object_t **entry, int *countp)
 {
@@ -877,7 +871,7 @@ static int cac_parse_properties_object(sc_card_t *card, u8 type,
 	if (data_len < 11)
 		return -1;
 
-	/* Initilize: non-PKI applet */
+	/* Initialize: non-PKI applet */
 	object->privatekey = 0;
 
 	val = data;
@@ -1090,10 +1084,8 @@ static int cac_select_file_by_type(sc_card_t *card, const sc_path_t *in_path, sc
 	 * We only need to do this for private keys.
 	 */
 	if ((pathlen > 2) && (pathlen <= 4) && memcmp(path, "\x3F\x00", 2) == 0) {
-		if (pathlen > 2) {
-			path += 2;
-			pathlen -= 2;
-		}
+		path += 2;
+		pathlen -= 2;
 	}
 
 
@@ -1307,7 +1299,7 @@ static int cac_parse_aid(sc_card_t *card, cac_private_data_t *priv, const u8 *ai
 	memcpy(new_object.path.aid.value, aid, aid_len);
 	new_object.path.aid.len = aid_len;
 
-	/* Call without OID set will just select the AID without subseqent
+	/* Call without OID set will just select the AID without subsequent
 	 * OID selection, which we need to figure out just now
 	 */
 	cac_select_file_by_type(card, &new_object.path, NULL);
@@ -1410,6 +1402,7 @@ static int cac_parse_cuid(sc_card_t *card, cac_private_data_t *priv, cac_cuid_t 
 		 sc_dump_hex(&val->card_id, card_id_len),
 		 card_id_len);
 	priv->cuid = *val;
+	free(priv->cac_id);
 	priv->cac_id = malloc(card_id_len);
 	if (priv->cac_id == NULL) {
 		return SC_ERROR_OUT_OF_MEMORY;
@@ -1418,10 +1411,10 @@ static int cac_parse_cuid(sc_card_t *card, cac_private_data_t *priv, cac_cuid_t 
 	priv->cac_id_len = card_id_len;
 	return SC_SUCCESS;
 }
-static int cac_process_CCC(sc_card_t *card, cac_private_data_t *priv);
+static int cac_process_CCC(sc_card_t *card, cac_private_data_t *priv, int depth);
 
 static int cac_parse_CCC(sc_card_t *card, cac_private_data_t *priv, const u8 *tl,
-						 size_t tl_len, u8 *val, size_t val_len)
+	size_t tl_len, u8 *val, size_t val_len, int depth)
 {
 	size_t len = 0;
 	const u8 *tl_end = tl + tl_len;
@@ -1518,7 +1511,8 @@ static int cac_parse_CCC(sc_card_t *card, cac_private_data_t *priv, const u8 *tl
 			if (r < 0)
 				return r;
 
-			r = cac_process_CCC(card, priv);
+			/* Increase depth to avoid infinite recursion */
+			r = cac_process_CCC(card, priv, depth + 1);
 			if (r < 0)
 				return r;
 			break;
@@ -1531,12 +1525,16 @@ static int cac_parse_CCC(sc_card_t *card, cac_private_data_t *priv, const u8 *tl
 	return SC_SUCCESS;
 }
 
-static int cac_process_CCC(sc_card_t *card, cac_private_data_t *priv)
+static int cac_process_CCC(sc_card_t *card, cac_private_data_t *priv, int depth)
 {
 	u8 *tl = NULL, *val = NULL;
 	size_t tl_len, val_len;
 	int r;
 
+	if (depth > CAC_MAX_CCC_DEPTH) {
+		sc_log(card->ctx, "Too much recursive CCC found. Exiting");
+		return SC_ERROR_INVALID_CARD;
+	}
 
 	r = cac_read_file(card, CAC_FILE_TAG, &tl, &tl_len);
 	if (r < 0)
@@ -1546,7 +1544,7 @@ static int cac_process_CCC(sc_card_t *card, cac_private_data_t *priv)
 	if (r < 0)
 		goto done;
 
-	r = cac_parse_CCC(card, priv, tl, tl_len, val, val_len);
+	r = cac_parse_CCC(card, priv, tl, tl_len, val, val_len, depth);
 done:
 	if (tl)
 		free(tl);
@@ -1704,6 +1702,7 @@ static int cac_populate_cac_alt(sc_card_t *card, int index, cac_private_data_t *
 	if (r > 0) {
 #ifdef ENABLE_OPENSSL
 		size_t val_len = r;
+		free(priv->cac_id);
 		priv->cac_id = malloc(20);
 		if (priv->cac_id == NULL) {
 			return SC_ERROR_OUT_OF_MEMORY;
@@ -1772,7 +1771,7 @@ static int cac_find_and_initialize(sc_card_t *card, int initialize)
 		priv = cac_new_private_data();
 		if (!priv)
 			return SC_ERROR_OUT_OF_MEMORY;
-		r = cac_process_CCC(card, priv);
+		r = cac_process_CCC(card, priv, 0);
 		if (r == SC_SUCCESS) {
 			card->type = SC_CARD_TYPE_CAC_II;
 			card->drv_data = priv;
@@ -1794,7 +1793,7 @@ static int cac_find_and_initialize(sc_card_t *card, int initialize)
 		}
 		r = cac_process_ACA(card, priv);
 		if (r == SC_SUCCESS) {
-			card->type = SC_CARD_TYPE_CAC_II;
+			card->type = SC_CARD_TYPE_CAC_ALT_HID;
 			card->drv_data = priv;
 			return r;
 		}
@@ -1870,7 +1869,10 @@ static int cac_pin_cmd(sc_card_t *card, struct sc_pin_cmd_data *data, int *tries
 	 * FIPS 201 4.1.6.1 (numeric only) and * FIPS 140-2
 	 * (6 character minimum) requirements.
 	 */
+	sc_apdu_t apdu;
+	u8  sbuf[SC_MAX_APDU_BUFFER_SIZE];
 	struct sc_card_driver *iso_drv = sc_get_iso7816_driver();
+	int rv;
 
 	if (data->cmd == SC_PIN_CMD_CHANGE) {
 		int i = 0;
@@ -1882,9 +1884,24 @@ static int cac_pin_cmd(sc_card_t *card, struct sc_pin_cmd_data *data, int *tries
 				return SC_ERROR_INVALID_DATA;
 			}
 		}
+
+		/* We can change the PIN of Giesecke & Devrient CAC ALT tokens
+		 * with a bit non-standard APDU */
+		if (card->type == SC_CARD_TYPE_CAC_ALT_HID) {
+			int r = 0;
+			r = iso7816_build_pin_apdu(card, &apdu, data, sbuf, sizeof(sbuf));
+			if (r < 0)
+				return r;
+			/* it requires P1 = 0x01 completely against the ISO specs */
+			apdu.p1 = 0x01;
+			data->apdu = &apdu;
+		}
 	}
 
-	return  iso_drv->ops->pin_cmd(card, data, tries_left);
+	rv = iso_drv->ops->pin_cmd(card, data, tries_left);
+
+	data->apdu = NULL;
+	return rv;
 }
 
 static struct sc_card_operations cac_ops;
@@ -1908,7 +1925,8 @@ static struct sc_card_driver * sc_get_driver(void)
 	cac_ops.select_file =  cac_select_file; /* need to record object type */
 	cac_ops.get_challenge = cac_get_challenge;
 	cac_ops.read_binary = cac_read_binary;
-	cac_ops.write_binary = cac_write_binary;
+	/* CAC driver is read only */
+	cac_ops.write_binary = NULL;
 	cac_ops.set_security_env = cac_set_security_env;
 	cac_ops.restore_security_env = cac_restore_security_env;
 	cac_ops.compute_signature = cac_compute_signature;

@@ -80,11 +80,15 @@ typedef struct {
 	size_t  num_rsa_mechs;
 	test_mech_t	ec_mechs[MAX_MECHS];
 	size_t  num_ec_mechs;
+	test_mech_t	ed_mechs[MAX_MECHS];
+	size_t  num_ed_mechs;
+	test_mech_t	montgomery_mechs[MAX_MECHS];
+	size_t  num_montgomery_mechs;
 	test_mech_t	keygen_mechs[MAX_MECHS];
 	size_t  num_keygen_mechs;
 } token_info_t;
 
-token_info_t token;
+extern token_info_t token;
 
 #endif /* P11TEST_COMMON_H */
 

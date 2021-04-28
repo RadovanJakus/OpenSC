@@ -21,7 +21,7 @@ do_subst = $(SED) \
 	   -e 's,[@]X509DIR[@],$(X509DIR),g'
 
 MAINTAINERCLEANFILES = $(srcdir)/Makefile.in $(srcdir)/versioninfo-tools.rc $(srcdir)/versioninfo-opensc-notify.rc
-EXTRA_DIST = Makefile.mak versioninfo-tools.rc.in versioninfo-opensc-notify.rc.in goid-tool.ggo.in npa-tool.ggo.in opensc-notify.ggo.in egk-tool.ggo.in opensc-asn1.ggo.in org.opensc.notify.desktop.in exe.manifest pkcs11-register.desktop.in pkcs11-register.plist.in opensc-notify.plist.in
+EXTRA_DIST = Makefile.mak versioninfo-tools.rc.in versioninfo-opensc-notify.rc.in goid-tool.ggo.in npa-tool.ggo.in opensc-notify.ggo.in egk-tool.ggo.in opensc-asn1.ggo.in org.opensc.notify.desktop.in exe.manifest pkcs11-register.desktop.in org.opensc-project.mac.pkcs11-register.plist.in org.opensc-project.mac.opensc-notify.plist.in
 
 noinst_HEADERS = util.h fread_to_eof.h \
 	egk-tool-cmdline.h goid-tool-cmdline.h npa-tool-cmdline.h \
@@ -52,12 +52,13 @@ piv_tool_SOURCES = piv-tool.c util.c
 piv_tool_LDADD = $(OPTIONAL_OPENSSL_LIBS)
 opensc_explorer_SOURCES = opensc-explorer.c util.c
 opensc_explorer_LDADD = $(OPTIONAL_READLINE_LIBS)
-pkcs15_tool_SOURCES = pkcs15-tool.c util.c
+pkcs15_tool_SOURCES = pkcs15-tool.c util.c ../pkcs11/pkcs11-display.c ../pkcs11/pkcs11-display.h
 pkcs15_tool_LDADD = $(OPTIONAL_OPENSSL_LIBS)
 pkcs11_tool_SOURCES = pkcs11-tool.c util.c
+pkcs11_tool_CFLAGS = $(OPTIONAL_OPENSSL_CFLAGS) $(PTHREAD_CFLAGS)
 pkcs11_tool_LDADD = \
 	$(top_builddir)/src/common/libpkcs11.la \
-	$(OPTIONAL_OPENSSL_LIBS)
+	$(OPTIONAL_OPENSSL_LIBS) $(PTHREAD_CFLAGS)
 if ENABLE_SHARED
 else
 pkcs11_tool_LDADD += \
@@ -98,7 +99,7 @@ endif
 
 opensc_notify_SOURCES = opensc-notify.c opensc-notify-cmdline.c
 opensc_notify_LDADD = $(top_builddir)/src/libopensc/libopensc.la $(OPTIONAL_NOTIFY_LIBS)
-opensc_notify_CFLAGS = -I$(top_srcdir)/src $(OPTIONAL_NOTIFY_CFLAGS)
+opensc_notify_CFLAGS = -I$(top_srcdir)/src $(PTHREAD_CFLAGS) $(OPTIONAL_NOTIFY_CFLAGS)
 opensc_notify_CFLAGS += -Wno-unused-but-set-variable
 if HAVE_UNKNOWN_WARNING_OPTION
 opensc_notify_CFLAGS += -Wno-unknown-warning-option
@@ -139,9 +140,9 @@ endif
 
 .PHONY: cmdline
 cmdline:
-	for f in *.ggo.in; do $(do_subst) < "$$f" > "$${f%.in}"; done
-	for f in *.ggo;    do $(GENGETOPT) --file-name="$${f%.ggo}-cmdline" --output-dir=$(builddir) < "$$f"; done
-	$(GENGETOPT) --file-name=opensc-asn1-cmdline --output-dir=$(builddir) < opensc-asn1.ggo --unamed-opts
+	@for f in *.ggo.in; do $(do_subst) < "$$f" > "$${f%.in}"; done
+	@for f in *.ggo;    do $(GENGETOPT) --file-name="$${f%.ggo}-cmdline" --output-dir=$(builddir) < "$$f"; done
+	$(AM_V_GEN)$(GENGETOPT) --file-name=opensc-asn1-cmdline --output-dir=$(builddir) < opensc-asn1.ggo --unamed-opts
 
 if WIN32
 opensc_tool_SOURCES += versioninfo-tools.rc
@@ -173,12 +174,12 @@ xdg_autostart_DATA = pkcs11-register.desktop
 endif
 
 %.desktop: %.desktop.in
-	$(do_subst) < $< > $@
+	$(AM_V_GEN)$(do_subst) < $< > $@
 
-noinst_DATA = pkcs11-register.plist opensc-notify.plist
+noinst_DATA = org.opensc-project.mac.pkcs11-register.plist org.opensc-project.mac.opensc-notify.plist
 
 %.plist: %.plist.in
-	$(do_subst) < $< > $@
+	$(AM_V_GEN)$(do_subst) < $< > $@
 
 clean-local:
 	rm -f $(abs_builddir)/npa-tool.ggo $(abs_builddir)/opensc-notify.ggo $(abs_builddir)/opensc-asn1.ggo $(abs_builddir)/goid-tool.ggo $(abs_builddir)/egk-tool.ggo org.opensc.notify.desktop pkcs11-register.desktop

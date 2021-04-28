@@ -253,10 +253,15 @@ static void sc_asn1_print_bit_string(const u8 * buf, size_t buflen, size_t depth
 	if (buflen > sizeof(a) + 1) {
 		print_hex(buf, buflen, depth);
 	} else {
-		r = sc_asn1_decode_bit_string(buf, buflen, &a, sizeof(a));
+		r = sc_asn1_decode_bit_string(buf, buflen, &a, sizeof(a), 1);
 		if (r < 0) {
-			printf("decode error");
-			return;
+			printf("decode error, ");
+			/* try again without the strict mode */
+			r = sc_asn1_decode_bit_string(buf, buflen, &a, sizeof(a), 0);
+			if (r < 0) {
+				printf("even for lax decoding");
+				return ;
+			}
 		}
 		for (i = r - 1; i >= 0; i--) {
 			printf("%c", ((a >> i) & 1) ? '1' : '0');
@@ -374,7 +379,7 @@ static void print_tags_recursive(const u8 * buf0, const u8 * buf,
 		size_t len;
 
 		r = sc_asn1_read_tag(&tagp, bytesleft, &cla, &tag, &len);
-		if (r != SC_SUCCESS || tagp == NULL) {
+		if (r != SC_SUCCESS || (tagp == NULL && tag != SC_ASN1_TAG_EOC)) {
 			printf("Error in decoding.\n");
 			return;
 		}
@@ -567,7 +572,7 @@ const u8 *sc_asn1_verify_tag(sc_context_t *ctx, const u8 * buf, size_t buflen,
 }
 
 static int decode_bit_string(const u8 * inbuf, size_t inlen, void *outbuf,
-			     size_t outlen, int invert)
+			     size_t outlen, int invert, const int strict)
 {
 	const u8 *in = inbuf;
 	u8 *out = (u8 *) outbuf;
@@ -577,6 +582,19 @@ static int decode_bit_string(const u8 * inbuf, size_t inlen, void *outbuf,
 
 	if (inlen < 1)
 		return SC_ERROR_INVALID_ASN1_OBJECT;
+
+	/* The formatting is only enforced by SHALL keyword so we should accept
+	 * by default also non-strict values. */
+	if (strict) {
+		/* 8.6.2.3 If the bitstring is empty, there shall be no
+		 * subsequent octets,and the initial octet shall be zero. */
+		if (inlen == 1 && *in != 0)
+			return SC_ERROR_INVALID_ASN1_OBJECT;
+		/* ITU-T Rec. X.690 8.6.2.2: The number shall be in the range zero to seven. */
+		if ((*in & ~0x07) != 0)
+			return SC_ERROR_INVALID_ASN1_OBJECT;
+	}
+
 	memset(outbuf, 0, outlen);
 	zero_bits = *in & 0x07;
 	in++;
@@ -591,9 +609,13 @@ static int decode_bit_string(const u8 * inbuf, size_t inlen, void *outbuf,
 		int bits_to_go;
 
 		*out = 0;
-		if (octets_left == 1)
+		if (octets_left == 1 && zero_bits > 0) {
 			bits_to_go = 8 - zero_bits;
-		else
+			/* Verify the padding is zero bits */
+			if (*in & (1 << (zero_bits-1))) {
+				return SC_ERROR_INVALID_ASN1_OBJECT;
+			}
+		} else
 			bits_to_go = 8;
 		if (invert)
 			for (i = 0; i < bits_to_go; i++) {
@@ -611,15 +633,15 @@ static int decode_bit_string(const u8 * inbuf, size_t inlen, void *outbuf,
 }
 
 int sc_asn1_decode_bit_string(const u8 * inbuf, size_t inlen,
-			      void *outbuf, size_t outlen)
+			      void *outbuf, size_t outlen, const int strict)
 {
-	return decode_bit_string(inbuf, inlen, outbuf, outlen, 1);
+	return decode_bit_string(inbuf, inlen, outbuf, outlen, 1, strict);
 }
 
 int sc_asn1_decode_bit_string_ni(const u8 * inbuf, size_t inlen,
-				 void *outbuf, size_t outlen)
+				 void *outbuf, size_t outlen, const int strict)
 {
-	return decode_bit_string(inbuf, inlen, outbuf, outlen, 0);
+	return decode_bit_string(inbuf, inlen, outbuf, outlen, 0, strict);
 }
 
 static int encode_bit_string(const u8 * inbuf, size_t bits_left, u8 **outbuf,
@@ -664,7 +686,7 @@ static int encode_bit_string(const u8 * inbuf, size_t bits_left, u8 **outbuf,
  * Bitfields are just bit strings, stored in an unsigned int
  * (taking endianness into account)
  */
-static int decode_bit_field(const u8 * inbuf, size_t inlen, void *outbuf, size_t outlen)
+static int decode_bit_field(const u8 * inbuf, size_t inlen, void *outbuf, size_t outlen, const int strict)
 {
 	u8		data[sizeof(unsigned int)];
 	unsigned int	field = 0;
@@ -673,7 +695,7 @@ static int decode_bit_field(const u8 * inbuf, size_t inlen, void *outbuf, size_t
 	if (outlen != sizeof(data))
 		return SC_ERROR_BUFFER_TOO_SMALL;
 
-	n = decode_bit_string(inbuf, inlen, data, sizeof(data), 1);
+	n = decode_bit_string(inbuf, inlen, data, sizeof(data), 1, strict);
 	if (n < 0)
 		return n;
 
@@ -706,17 +728,28 @@ static int encode_bit_field(const u8 *inbuf, size_t inlen,
 	return encode_bit_string(data, bits, outbuf, outlen, 1);
 }
 
-int sc_asn1_decode_integer(const u8 * inbuf, size_t inlen, int *out)
+int sc_asn1_decode_integer(const u8 * inbuf, size_t inlen, int *out, int strict)
 {
 	int    a = 0, is_negative = 0;
 	size_t i = 0;
 
-	if (inlen > sizeof(int) || inlen == 0)
+	if (inlen == 0) {
 		return SC_ERROR_INVALID_ASN1_OBJECT;
+	}
+	if (inlen > sizeof(int)) {
+		return SC_ERROR_NOT_SUPPORTED;
+	}
 	if (inbuf[0] & 0x80) {
+		if (strict && inlen > 1 && inbuf[0] == 0xff && (inbuf[1] & 0x80)) {
+			return SC_ERROR_INVALID_ASN1_OBJECT;
+		}
 		is_negative = 1;
 		a |= 0xff^(*inbuf++);
 		i = 1;
+	} else {
+		if (strict && inlen > 1 && inbuf[0] == 0x00 && (inbuf[1] & 0x80) == 0) {
+			return SC_ERROR_INVALID_ASN1_OBJECT;
+		}
 	}
 	for (; i < inlen; i++) {
 		if (a > (INT_MAX >> 8) || a < (INT_MIN + (1<<8))) {
@@ -797,7 +830,8 @@ static int asn1_encode_integer(int in, u8 ** obj, size_t * objsize)
 int
 sc_asn1_decode_object_id(const u8 *inbuf, size_t inlen, struct sc_object_id *id)
 {
-	int a;
+	int large_second_octet = 0;
+	unsigned int a = 0;
 	const u8 *p = inbuf;
 	int *octet;
 
@@ -807,18 +841,36 @@ sc_asn1_decode_object_id(const u8 *inbuf, size_t inlen, struct sc_object_id *id)
 	sc_init_oid(id);
 	octet = id->value;
 
-	a = *p;
-	*octet++ = a / 40;
-	*octet++ = a % 40;
-	inlen--;
+	/* The first octet can be 0, 1 or 2 and is derived from the first byte */
+	a = MIN(*p / 40, 2);
+	*octet++ = a;
+
+	/* The second octet fits here if the previous was 0 or 1 and second one is smaller than 40.
+	 * for the value 2 we can go up to 47. Otherwise the first bit needs to be set
+	 * and we continue reading further */
+	if ((*p & 0x80) == 0) {
+		*octet++ = *p - (a * 40);
+		inlen--;
+	} else {
+		large_second_octet = 1;
+	}
 
 	while (inlen) {
-		p++;
+		if (!large_second_octet)
+			p++;
+		/* This signalizes empty most significant bits, which means
+		 * the unsigned integer encoding is not minimal */
+		if (*p == 0x80) {
+			sc_init_oid(id);
+			return SC_ERROR_INVALID_ASN1_OBJECT;
+		}
+		/* Use unsigned type here so we can process the whole INT range.
+		 * Values can not be negative */
 		a = *p & 0x7F;
 		inlen--;
 		while (inlen && *p & 0x80) {
 			/* Limit the OID values to int size and do not overflow */
-			if (a > (INT_MAX>>7)) {
+			if (a > (UINT_MAX>>7)) {
 				sc_init_oid(id);
 				return SC_ERROR_NOT_SUPPORTED;
 			}
@@ -827,12 +879,26 @@ sc_asn1_decode_object_id(const u8 *inbuf, size_t inlen, struct sc_object_id *id)
 			a |= *p & 0x7F;
 			inlen--;
 		}
+		if (*p & 0x80) {
+			/* We dropped out from previous cycle on the end of
+			 * data while still expecting continuation of value */
+			sc_init_oid(id);
+			return SC_ERROR_INVALID_ASN1_OBJECT;
+		}
+		if (large_second_octet) {
+			a -= (2 * 40);
+		}
+		if (a > INT_MAX) {
+			sc_init_oid(id);
+			return SC_ERROR_NOT_SUPPORTED;
+		}
 		*octet++ = a;
 		if (octet - id->value >= SC_MAX_OBJECT_ID_OCTETS)   {
 			sc_init_oid(id);
 			return SC_ERROR_INVALID_ASN1_OBJECT;
 		}
-	};
+		large_second_octet = 0;
+	}
 
 	return 0;
 }
@@ -864,10 +930,13 @@ sc_asn1_encode_object_id(u8 **buf, size_t *buflen, const struct sc_object_id *id
 			*p = k * 40;
 			break;
 		case 1:
-			if (k > 39)
+			if (k > 39 && id->value[0] < 2) {
 				return SC_ERROR_INVALID_ARGUMENTS;
-			*p++ += k;
-			break;
+			}
+			/* We can encode larger IDs to multiple bytes
+			 * similarly as the following IDs */
+			k += *p;
+			/* fall through */
 		default:
 			shift = 28;
 			while (shift && (k >> shift) == 0)
@@ -903,6 +972,9 @@ static int sc_asn1_decode_utf8string(const u8 *inbuf, size_t inlen,
 	return 0;
 }
 
+/*
+ * This assumes the tag is already encoded
+ */
 int sc_asn1_put_tag(unsigned int tag, const u8 * data, size_t datalen, u8 * out, size_t outlen, u8 **ptr)
 {
 	size_t c = 0;
@@ -1174,9 +1246,12 @@ static int asn1_decode_se_info(sc_context_t *ctx, const u8 *obj, size_t objlen,
 	size_t idx, ptrlen = objlen;
 	int ret;
 
+	LOG_FUNC_CALLED(ctx);
+
 	ses = calloc(SC_MAX_SE_NUM, sizeof(sc_pkcs15_sec_env_info_t *));
-	if (ses == NULL)
-		return SC_ERROR_OUT_OF_MEMORY;
+	if (ses == NULL) {
+		SC_FUNC_RETURN(ctx, SC_LOG_DEBUG_ASN1, SC_ERROR_OUT_OF_MEMORY);
+	}
 
 	for (idx=0; idx < SC_MAX_SE_NUM && ptrlen; )   {
 		struct sc_asn1_entry asn1_se[2];
@@ -1220,7 +1295,7 @@ err:
 		free(ses);
 	}
 
-	return ret;
+	SC_FUNC_RETURN(ctx, SC_LOG_DEBUG_ASN1, ret);
 }
 
 
@@ -1448,7 +1523,7 @@ static int asn1_decode_entry(sc_context_t *ctx,struct sc_asn1_entry *entry,
 	case SC_ASN1_INTEGER:
 	case SC_ASN1_ENUMERATED:
 		if (parm != NULL) {
-			r = sc_asn1_decode_integer(obj, objlen, (int *) entry->parm);
+			r = sc_asn1_decode_integer(obj, objlen, (int *) entry->parm, 0);
 			sc_debug(ctx, SC_LOG_DEBUG_ASN1, "%*.*sdecoding '%s' returned %d\n", depth, depth, "",
 					entry->name, *((int *) entry->parm));
 		}
@@ -1464,15 +1539,17 @@ static int asn1_decode_entry(sc_context_t *ctx,struct sc_asn1_entry *entry,
 			}
 			if (entry->flags & SC_ASN1_ALLOC) {
 				u8 **buf = (u8 **) parm;
-				*buf = malloc(objlen-1);
-				if (*buf == NULL) {
-					r = SC_ERROR_OUT_OF_MEMORY;
-					break;
+				if (objlen > 1) {
+					*buf = malloc(objlen-1);
+					if (*buf == NULL) {
+						r = SC_ERROR_OUT_OF_MEMORY;
+						break;
+					}
 				}
 				*len = objlen-1;
 				parm = *buf;
 			}
-			r = decode_bit_string(obj, objlen, (u8 *) parm, *len, invert);
+			r = decode_bit_string(obj, objlen, (u8 *) parm, *len, invert, 0);
 			if (r >= 0) {
 				*len = r;
 				r = 0;
@@ -1481,7 +1558,7 @@ static int asn1_decode_entry(sc_context_t *ctx,struct sc_asn1_entry *entry,
 		break;
 	case SC_ASN1_BIT_FIELD:
 		if (parm != NULL)
-			r = decode_bit_field(obj, objlen, (u8 *) parm, *len);
+			r = decode_bit_field(obj, objlen, (u8 *) parm, *len, 0);
 		break;
 	case SC_ASN1_OCTET_STRING:
 		if (parm != NULL) {
@@ -1498,10 +1575,12 @@ static int asn1_decode_entry(sc_context_t *ctx,struct sc_asn1_entry *entry,
 			/* Allocate buffer if needed */
 			if (entry->flags & SC_ASN1_ALLOC) {
 				u8 **buf = (u8 **) parm;
-				*buf = malloc(objlen);
-				if (*buf == NULL) {
-					r = SC_ERROR_OUT_OF_MEMORY;
-					break;
+				if (objlen > 0) {
+					*buf = malloc(objlen);
+					if (*buf == NULL) {
+						r = SC_ERROR_OUT_OF_MEMORY;
+						break;
+					}
 				}
 				c = *len = objlen;
 				parm = *buf;
@@ -1518,10 +1597,12 @@ static int asn1_decode_entry(sc_context_t *ctx,struct sc_asn1_entry *entry,
 			assert(len != NULL);
 			if (entry->flags & SC_ASN1_ALLOC) {
 				u8 **buf = (u8 **) parm;
-				*buf = malloc(objlen);
-				if (*buf == NULL) {
-					r = SC_ERROR_OUT_OF_MEMORY;
-					break;
+				if (objlen > 0) {
+					*buf = malloc(objlen);
+					if (*buf == NULL) {
+						r = SC_ERROR_OUT_OF_MEMORY;
+						break;
+					}
 				}
 				c = *len = objlen;
 				parm = *buf;
@@ -1921,6 +2002,10 @@ static int asn1_encode(sc_context_t *ctx, const struct sc_asn1_entry *asn1,
 	u8 *obj = NULL, *buf = NULL, *tmp;
 	size_t total = 0, objsize;
 
+	if (asn1 == NULL) {
+		return SC_ERROR_INVALID_ARGUMENTS;
+	}
+
 	for (idx = 0; asn1[idx].name != NULL; idx++) {
 		r = asn1_encode_entry(ctx, &asn1[idx], &obj, &objsize, depth);
 		if (r) {
@@ -2090,8 +2175,10 @@ sc_asn1_sig_value_sequence_to_rs(struct sc_context *ctx, const unsigned char *in
 	}
 
 	memset(buf, 0, buflen);
-	memcpy(buf + (halflen - r_len), r, r_len);
-	memcpy(buf + (buflen - s_len), s, s_len);
+	if (r_len > 0)
+		memcpy(buf + (halflen - r_len), r, r_len);
+	if (s_len > 0)
+		memcpy(buf + (buflen - s_len), s, s_len);
 
 	sc_log(ctx, "r(%"SC_FORMAT_LEN_SIZE_T"u): %s", halflen,
 	       sc_dump_hex(buf, halflen));

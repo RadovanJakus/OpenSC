@@ -43,9 +43,6 @@
 #define LOAD_KEY_EC_PRIVATE		0x1087
 #define LOAD_KEY_SYMMETRIC		0x20a0
 
-#define MYEID_STATE_CREATION		0x01
-#define MYEID_STATE_ACTIVATED		0x07
-
 #define MYEID_CARD_NAME_MAX_LEN		100
 
 /* The following flags define the features supported by the card currently in use.
@@ -86,6 +83,7 @@ typedef struct myeid_private_data {
 	 ECDH key agreement. Note that this pointer is usually not valid
 	 after this pair of calls and must not be used elsewhere. */
 	const struct sc_security_env* sec_env;
+	int disable_hw_pkcs1_padding;
 } myeid_private_data_t;
 
 typedef struct myeid_card_caps {
@@ -166,6 +164,34 @@ myeid_select_aid(struct sc_card *card, struct sc_aid *aid, unsigned char *out, s
 	return SC_SUCCESS;
 }
 
+static int myeid_load_options(sc_context_t *ctx, myeid_private_data_t *priv)
+{
+	int r;
+	size_t i, j;
+	scconf_block **found_blocks, *block;
+
+	if (!ctx || !priv) {
+		r = SC_ERROR_INTERNAL;
+		goto err;
+	}
+	priv->disable_hw_pkcs1_padding = 0;
+	for (i = 0; ctx->conf_blocks[i]; i++) {
+		found_blocks = scconf_find_blocks(ctx->conf, ctx->conf_blocks[i],
+				"card_driver", "myeid");
+		if (!found_blocks)
+			continue;
+		for (j = 0, block = found_blocks[j]; block; j++, block = found_blocks[j]) {
+			priv->disable_hw_pkcs1_padding = scconf_get_int(block, "disable_hw_pkcs1_padding", 0);
+			sc_log(ctx,"Found config option: disable_hw_pkcs1_padding = %d\n", priv->disable_hw_pkcs1_padding);
+		}
+		free(found_blocks);
+	}
+	r = SC_SUCCESS;
+
+err:
+	return r;
+}
+
 static int myeid_init(struct sc_card *card)
 {
 	unsigned long flags = 0, ext_flags = 0;
@@ -176,6 +202,7 @@ static int myeid_init(struct sc_card *card)
 	size_t resp_len = 0;
 	static struct sc_aid myeid_aid = { "\xA0\x00\x00\x00\x63\x50\x4B\x43\x53\x2D\x31\x35", 0x0C };
 	int rv = 0;
+	void *old_drv_data = card->drv_data;
 
 	LOG_FUNC_CALLED(card->ctx);
 
@@ -195,19 +222,22 @@ static int myeid_init(struct sc_card *card)
 	if (!priv)
 		LOG_FUNC_RETURN(card->ctx, SC_ERROR_OUT_OF_MEMORY);
 
+	rv = myeid_load_options (card->ctx, priv);
+	LOG_TEST_GOTO_ERR(card->ctx, rv, "Unable to read options from opensc.conf");
+
 	priv->card_state = SC_FILE_STATUS_CREATION;
 	card->drv_data = priv;
 
 	/* Ensure that the MyEID applet is selected. */	
 	rv = myeid_select_aid(card, &myeid_aid, NULL, &resp_len);
-	LOG_TEST_RET(card->ctx, rv, "Failed to select MyEID applet.");
+	LOG_TEST_GOTO_ERR(card->ctx, rv, "Failed to select MyEID applet.");
 
 	/* find out MyEID version */
 
 	appletInfoLen = 20;
 
 	if (0 > myeid_get_info(card, appletInfo, appletInfoLen))
-		LOG_TEST_RET(card->ctx, SC_ERROR_INVALID_CARD, "Failed to get MyEID applet information.");
+		LOG_TEST_GOTO_ERR(card->ctx, SC_ERROR_INVALID_CARD, "Failed to get MyEID applet information.");
 
 	priv->change_counter = appletInfo[19] | appletInfo[18] << 8;
 
@@ -223,8 +253,10 @@ static int myeid_init(struct sc_card *card)
 	    }
 	}
 
-	flags = SC_ALGORITHM_RSA_RAW | SC_ALGORITHM_RSA_PAD_PKCS1 | SC_ALGORITHM_ONBOARD_KEY_GEN;
-	flags |= SC_ALGORITHM_RSA_HASH_NONE | SC_ALGORITHM_RSA_HASH_SHA1;
+	flags = SC_ALGORITHM_RSA_RAW | SC_ALGORITHM_ONBOARD_KEY_GEN;
+	if (priv->disable_hw_pkcs1_padding == 0)
+		flags |= SC_ALGORITHM_RSA_PAD_PKCS1;
+	flags |= SC_ALGORITHM_RSA_HASH_NONE;
 
 	_sc_card_add_rsa_alg(card,  512, flags, 0);
 	_sc_card_add_rsa_alg(card,  768, flags, 0);
@@ -244,7 +276,7 @@ static int myeid_init(struct sc_card *card)
 		int i;
 
 		flags = SC_ALGORITHM_ECDSA_RAW | SC_ALGORITHM_ECDH_CDH_RAW | SC_ALGORITHM_ONBOARD_KEY_GEN;
-		flags |= SC_ALGORITHM_ECDSA_HASH_NONE | SC_ALGORITHM_ECDSA_HASH_SHA1;
+		flags |= SC_ALGORITHM_ECDSA_HASH_NONE;
 		ext_flags = SC_ALGORITHM_EXT_EC_NAMEDCURVE | SC_ALGORITHM_EXT_EC_UNCOMPRESES;
 
 		for (i=0; ec_curves[i].curve_name != NULL; i++) {
@@ -256,8 +288,8 @@ static int myeid_init(struct sc_card *card)
 	/* show supported symmetric algorithms */
 	flags = 0;
 	if (card_caps.card_supported_features & MYEID_CARD_CAP_3DES) {
-		if (card_caps.max_des_key_length >= 56)
-			_sc_card_add_symmetric_alg(card, SC_ALGORITHM_DES, 56, flags);
+		if (card_caps.max_des_key_length >= 64)
+			_sc_card_add_symmetric_alg(card, SC_ALGORITHM_DES, 64, flags);
 		if (card_caps.max_des_key_length >= 128)
 			_sc_card_add_symmetric_alg(card, SC_ALGORITHM_3DES, 128, flags);
 		if (card_caps.max_des_key_length >= 192)
@@ -280,11 +312,21 @@ static int myeid_init(struct sc_card *card)
 
 	if (card->version.fw_major >= 45)
 		priv->cap_chaining = 1;
-
-	card->max_recv_size = 256;
+	if (card->version.fw_major >= 40)
+		card->max_recv_size = 256;
+	else
+		card->max_recv_size = 255;
 	card->max_send_size = 255;
 
-	LOG_FUNC_RETURN(card->ctx, SC_SUCCESS);
+	rv = SC_SUCCESS;
+
+err:
+	if (rv < 0) {
+		free(priv);
+		card->drv_data = old_drv_data;
+	}
+
+	LOG_FUNC_RETURN(card->ctx, rv);
 }
 
 static const struct sc_card_operations *iso_ops = NULL;
@@ -430,20 +472,18 @@ static int myeid_process_fci(struct sc_card *card, struct sc_file *file,
 		sc_log(card->ctx, "id (%X) sec_attr (%X %X %X)", file->id,
 			file->sec_attr[0],file->sec_attr[1],file->sec_attr[2]);
 	}
-	tag = sc_asn1_find_tag(NULL, buf, buflen, 0x8A, &taglen);
-	if (tag != NULL && taglen > 0)
-	{
-		if(tag[0] == MYEID_STATE_CREATION) {
-			file->status = SC_FILE_STATUS_CREATION;
-			sc_log(card->ctx, "File id (%X) status SC_FILE_STATUS_CREATION (0x%X)",
-					file->id, tag[0]);
-		}
-		else if(tag[0] == MYEID_STATE_ACTIVATED) {
-			file->status = SC_FILE_STATUS_ACTIVATED;
-			sc_log(card->ctx, "File id (%X) status SC_FILE_STATUS_ACTIVATED (0x%X)",
-					file->id, tag[0]);
-		}
-		priv->card_state = file->status;
+
+	priv->card_state = file->status;
+	switch (file->status) {
+		case SC_FILE_STATUS_CREATION:
+			file->acl_inactive = 1;
+			sc_log(card->ctx, "File id (%X) status SC_FILE_STATUS_CREATION", file->id);
+			break;
+		case SC_FILE_STATUS_ACTIVATED:
+			sc_log(card->ctx, "File id (%X) status SC_FILE_STATUS_ACTIVATED", file->id);
+			break;
+		default:
+			sc_log(card->ctx, "File id (%X) unusual status (0x%X)", file->id, file->status);
 	}
 
 	LOG_FUNC_RETURN(card->ctx, 0);
@@ -1468,11 +1508,6 @@ static int myeid_loadkey(sc_card_t *card, unsigned mode, u8* value, int value_le
 
 	if (mode == LOAD_KEY_MODULUS && value_len == 256 && !priv->cap_chaining)
 	{
-		if ((value_len % 2) > 0 && value[0] == 0x00)
-		{
-			value_len--;
-			value++;
-		}
 		mode = 0x88;
 		memset(&apdu, 0, sizeof(apdu));
 		sc_format_apdu(card, &apdu, SC_APDU_CASE_3_SHORT, 0xDA, 0x01, mode);

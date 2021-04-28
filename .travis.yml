@@ -4,20 +4,26 @@ matrix:
   include:
     - compiler: clang
       os: osx
+      osx_image: xcode9.4
       env: DO_PUSH_ARTIFACT=yes
-    - compiler: gcc
+    - compiler: clang
+      os: osx
+      osx_image: xcode12.2
+      env: DO_PUSH_ARTIFACT=yes
+    - compiler: clang
       os: linux
-      dist: trusty
-      env:
-        - DO_SIMULATION=javacard
-        - ENABLE_DOC=--enable-doc
-      sudo: true
+      dist: focal
     - compiler: gcc
       os: linux
       dist: bionic
       env:
+        - DO_SIMULATION=javacard
+        - ENABLE_DOC=--enable-doc
+    - compiler: gcc
+      os: linux
+      dist: focal
+      env:
         - DO_SIMULATION=oseid
-      sudo: true
     - env:
         - HOST=x86_64-w64-mingw32
         - DO_PUSH_ARTIFACT=yes
@@ -30,11 +36,10 @@ matrix:
       dist: bionic
       env:
         - DO_SIMULATION=cac
-      sudo: true
 
 env:
   global:
-    # The next declaration are encrypted envirnmet variables, created via the
+    # The next declaration are encrypted environment variables, created via the
     # "travis encrypt" command using the project repo's public key
     # COVERITY_SCAN_TOKEN
     - secure: "UkHn7wy4im8V1nebCWbAetnDSOLRUbOlF6++ovk/7Bnso1/lnhXHelyzgRxfD/oI68wm9nnRV+RQEZ9+72Ug1CyvHxyyxxkwal/tPeHH4B/L+aGdPi0id+5OZSKIm77VP3m5s102sJMJgH7DFd03+nUd0K26p0tk8ad4j1geV4c="
@@ -64,16 +69,43 @@ addons:
     - check
     - ant
     - socat
+    - cmake
+    - clang-tidy
+    - softhsm2
 
 before_install:
-  # brew install gengetopt help2man cmocka ccache llvm;
-  # export PATH="/usr/local/opt/ccache/libexec:/usr/local/opt/llvm/bin:$PATH";
+  # homebrew is dead slow in older images due to the many updates it would need to download and build.
+  # here, we build the additional dependencies manually to get around this
   - if [ "$TRAVIS_OS_NAME" = "osx" ]; then
-        brew update;
-        brew uninstall libtool;
-        brew install libtool;
-        brew install gengetopt help2man cmocka ccache;
+        curl https://ftp.gnu.org/gnu/gengetopt/gengetopt-2.23.tar.xz -L --output gengetopt-2.23.tar.xz;
+        tar xfj gengetopt-2.23.tar.xz;
+        pushd gengetopt-2.23;
+        ./configure && make;
+        sudo make install;
+        popd;
+        curl https://ftp.gnu.org/gnu/help2man/help2man-1.47.16.tar.xz -L --output help2man-1.47.16.tar.xz;
+        tar xjf help2man-1.47.16.tar.xz;
+        pushd help2man-1.47.16;
+        ./configure && make;
+        sudo make install;
+        popd;
         export PATH="/usr/local/opt/ccache/libexec:$PATH";
+        git clone https://github.com/frankmorgner/OpenSCToken.git;
+        sudo rm -rf /Library/Developer/CommandLineTools;
+    fi
+  - if [ "$TRAVIS_OS_NAME" = "osx" -a "$TRAVIS_PULL_REQUEST" = "false" -a -n "$encrypted_3b9f0b9d36d1_key" ]; then
+        openssl aes-256-cbc -K $encrypted_3b9f0b9d36d1_key -iv $encrypted_3b9f0b9d36d1_iv -in .github/secrets.tar.enc -out .github/secrets.tar -d;
+        .github/add_signing_key.sh;
+    else
+        unset CODE_SIGN_IDENTITY INSTALLER_SIGN_IDENTITY;
+    fi
+  - if [ "${DO_SIMULATION}" = "javacard" ]; then
+        sudo apt-get install -y openjdk-8-jdk;
+        sudo update-java-alternatives -s java-1.8.0-openjdk-amd64;
+        sudo update-alternatives --get-selections | grep ^java;
+        export PATH="/usr/lib/jvm/java-8-openjdk-amd64/bin/:$PATH";
+        export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64/;
+        env | grep -i openjdk;
     fi
   - if [ "${DO_SIMULATION}" = "cac" ]; then
         sudo apt-get install -y libglib2.0-dev libnss3-dev  pkgconf libtool make autoconf autoconf-archive automake libsofthsm2-dev softhsm2 softhsm2-common help2man gnutls-bin libcmocka-dev libusb-dev libudev-dev flex libnss3-tools libssl-dev libpcsclite1;
@@ -102,23 +134,27 @@ before_script:
       if [ ! -f "$(winepath 'C:/Program Files (x86)/Inno Setup 5/ISCC.exe')" ]; then
         /sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -ac -screen 0 1280x1024x16;
         export DISPLAY=:99.0;
+        [ -d isetup ] || mkdir isetup;
+        pushd isetup;
         [ -f isetup-5.5.6.exe ] || wget http://files.jrsoftware.org/is/5/isetup-5.5.6.exe;
         wine isetup-5.5.6.exe /SILENT /VERYSILENT /SP- /SUPPRESSMSGBOXES /NORESTART;
+        popd;
       fi;
       unset CC;
       unset CXX;
       ./configure --host=$HOST --with-completiondir=/tmp --disable-openssl --disable-readline --disable-zlib --disable-notify --prefix=${TRAVIS_BUILD_DIR}/win32/opensc || cat config.log;
     fi
   # Optionally try to upload to Coverity Scan
-  # On error (propably quota is exhausted), just continue
+  # On error (probably quota is exhausted), just continue
   - if [ "${DO_COVERITY_SCAN}" = "yes" ]; then curl -s 'https://scan.coverity.com/scripts/travisci_build_coverity_scan.sh' | bash || true; fi
 
   - if [ "${DO_SIMULATION}" = "javacard" ]; then
+      set -ex;
       git clone https://github.com/frankmorgner/vsmartcard.git;
       cd vsmartcard/virtualsmartcard;
       autoreconf -vis && ./configure && sudo make install;
       cd $TRAVIS_BUILD_DIR;
-      sudo /etc/init.d/pcscd restart;
+      sudo systemctl stop pcscd.service pcscd.socket;
 
       git clone https://github.com/martinpaljak/oracle_javacard_sdks.git;
       export JC_HOME=$PWD/oracle_javacard_sdks/jc222_kit;
@@ -126,6 +162,8 @@ before_script:
 
       git clone https://github.com/arekinath/jcardsim.git;
       cd jcardsim;
+      env | grep -i openjdk;
+      export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64/;
       mvn initialize && mvn clean install;
       cd $TRAVIS_BUILD_DIR;
 
@@ -157,13 +195,15 @@ before_script:
 
       git clone --recursive https://github.com/arekinath/PivApplet.git;
       cd PivApplet;
-      ant dist;
+      JC_HOME=${JC_CLASSIC_HOME} ant dist;
       cd $TRAVIS_BUILD_DIR;
 
       git clone https://github.com/Yubico/yubico-piv-tool.git;
       cd yubico-piv-tool;
-      autoreconf -vis && ./configure && sudo make install;
+      mkdir build; cd build;
+      cmake .. && make && sudo make install;
       cd $TRAVIS_BUILD_DIR;
+      set +ex;
     fi
 
   - if [ "${DO_SIMULATION}" = "oseid" ]; then
@@ -172,6 +212,7 @@ before_script:
       make -f Makefile.console;
       mkdir tmp;
       socat -d -d pty,link=tmp/OsEIDsim.socket,raw,echo=0 "exec:build/console/console ...,pty,raw,echo=0" &
+      PID=$!;
       sleep 1;
       echo "# OsEIDsim" > tmp/reader.conf;
       echo 'FRIENDLYNAME      "OsEIDsim"' >> tmp/reader.conf;
@@ -211,7 +252,7 @@ script:
       fi;
     fi
   - if [ -z "$HOST" -a "${DO_COVERITY_SCAN}" != "yes" -a -z "$DO_SIMULATION" ]; then
-      make check && make dist;
+      make check && make dist || (cat tests/*log src/tests/unittests/*log && exit 1);
     fi
   - if [ ! -z "$HOST" -a "${DO_COVERITY_SCAN}" != "yes" ]; then
       make install;
@@ -223,42 +264,53 @@ script:
       sudo make install;
       export LD_LIBRARY_PATH=/usr/local/lib;
 
+      sudo /usr/sbin/pcscd -f &
+      PCSCD_PID=$!;
+
       java -noverify -cp IsoApplet/src/:jcardsim/target/jcardsim-3.0.5-SNAPSHOT.jar com.licel.jcardsim.remote.VSmartCard isoapplet_jcardsim.cfg >/dev/null &
+      PID=$!;
       sleep 5;
       opensc-tool --card-driver default --send-apdu 80b800001a0cf276a288bcfba69d34f310010cf276a288bcfba69d34f3100100;
       opensc-tool -n;
       pkcs15-init --create-pkcs15 --so-pin 123456 --so-puk 0123456789abcdef;
+      pkcs15-tool --change-pin --pin 123456 --new-pin 654321;
+      pkcs15-tool --unblock-pin --puk 0123456789abcdef --new-pin 123456;
       pkcs15-init --generate-key rsa/2048     --id 1 --key-usage decrypt,sign --auth-id FF --pin 123456;
       pkcs15-init --generate-key rsa/2048     --id 2 --key-usage decrypt      --auth-id FF --pin 123456;
       pkcs15-init --generate-key ec/secp256r1 --id 3 --key-usage sign         --auth-id FF --pin 123456;
       pkcs15-tool -D;
       pkcs11-tool -l -t -p 123456;
-      killall java;
+      kill -9 $PID;
 
       java -noverify -cp GidsApplet/src/:jcardsim/target/jcardsim-3.0.5-SNAPSHOT.jar com.licel.jcardsim.remote.VSmartCard gids_jcardsim.cfg >/dev/null &
+      PID=$!;
       sleep 5;
       opensc-tool --card-driver default --send-apdu 80b80000190bA0000003974254465902010bA00000039742544659020100;
       opensc-tool -n;
       gids-tool --initialize --pin 123456 --admin-key 000000000000000000000000000000000000000000000000 --serial 00000000000000000000000000000000;
-      killall java;
+      kill -9 $PID;
 
       java -noverify -cp ykneo-openpgp/applet/bin:jcardsim/target/jcardsim-3.0.5-SNAPSHOT.jar com.licel.jcardsim.remote.VSmartCard openpgp_jcardsim.cfg >/dev/null &
+      PID=$!;
       sleep 5;
       opensc-tool --card-driver default --send-apdu 80b800002210D276000124010200000000000001000010D276000124010200000000000001000000;
       opensc-tool -n;
       openpgp-tool --verify CHV3 --pin 12345678 --gen-key 2;
       pkcs15-init --verify --auth-id 3 --pin 12345678 --delete-objects privkey,pubkey --id 2 --generate-key rsa/2048;
       pkcs11-tool -l -t -p 123456;
-      killall java;
+      kill -9 $PID;
 
       java -noverify -cp PivApplet/bin/:jcardsim/target/jcardsim-3.0.5-SNAPSHOT.jar com.licel.jcardsim.remote.VSmartCard PivApplet/test/jcardsim.cfg >/dev/null &
+      PID=$!;
       sleep 5;
       opensc-tool --card-driver default --send-apdu 80b80000120ba000000308000010000100050000020F0F7f;
       opensc-tool -n;
-      yubico-piv-tool -r 'Virtual PCD 00 00' -P 123456 -s 9a -a generate -A ECCP256;
-      yubico-piv-tool -r 'Virtual PCD 00 00' -P 123456 -s 9e -a generate -A RSA2048;
+      yubico-piv-tool -v 9999 -r 'Virtual PCD 00 00' -P 123456 -s 9e -a generate -A RSA2048;
+      yubico-piv-tool -v 9999 -r 'Virtual PCD 00 00' -P 123456 -s 9a -a generate -A ECCP256;
       pkcs11-tool -l -t -p 123456;
-      killall java;
+      kill -9 $PID;
+
+      sudo kill -9 $PCSCD_PID;
 
       set +ex;
     fi
@@ -273,17 +325,19 @@ script:
       ./OsEID-tool RSA-CREATE-KEYS;
       ./OsEID-tool RSA-UPLOAD-KEYS;
       ./OsEID-tool RSA-DECRYPT-TEST;
+      ./OsEID-tool RSA-SIGN-PKCS11-TEST;
       ./OsEID-tool EC-CREATE-KEYS;
       ./OsEID-tool EC-UPLOAD-KEYS;
       ./OsEID-tool EC-SIGN-TEST;
+      ./OsEID-tool EC-SIGN-PKCS11-TEST;
       ./OsEID-tool EC-ECDH-TEST;
-      killall socat;
+      kill -9 $PID;
 
       set +ex;
     fi
   - if [ "${DO_SIMULATION}" = "cac" ]; then
       cd $TRAVIS_BUILD_DIR;
-      make check && sudo make install;
+      make check && sudo make install || (cat tests/*log src/tests/unittests/*log && exit 1);
       export LD_LIBRARY_PATH=/usr/local/lib;
       cd src/tests/p11test/;
       ./p11test -s 0 -p 12345678 -i &
@@ -309,17 +363,16 @@ after_script:
       git config --global user.name "Travis CI";
       .github/push_artifacts.sh "Travis CI build ${TRAVIS_JOB_NUMBER}";
     fi
-
-before_cache:
-  - brew cleanup
+  - if [ "$TRAVIS_OS_NAME" = "osx" ]; then
+      .github/remove_signing_key.sh;
+      rm -f .github/secrets.tar;
+    fi
 
 cache:
   apt: true
   ccache: true
   directories:
     - $HOME/.m2/
-    - $HOME/Library/Caches/Homebrew
     - openssl_bin
     - openpace_bin
-  files:
-    - isetup-5.5.6.exe
+    - isetup

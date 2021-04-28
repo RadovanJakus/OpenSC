@@ -47,6 +47,7 @@ enum {
 	SC_CARD_TYPE_CARDOS_CIE_V1, /* Italian CIE (eID) v1 */
 	SC_CARD_TYPE_CARDOS_M4_4,
 	SC_CARD_TYPE_CARDOS_V5_0,
+	SC_CARD_TYPE_CARDOS_V5_3,
 
 	/* flex/cyberflex drivers */
 	SC_CARD_TYPE_FLEX_BASE = 2000,
@@ -204,6 +205,8 @@ enum {
 	SC_CARD_TYPE_IASECC_AMOS,
 	SC_CARD_TYPE_IASECC_MI,
 	SC_CARD_TYPE_IASECC_MI2,
+	SC_CARD_TYPE_IASECC_CPX,
+	SC_CARD_TYPE_IASECC_CPXCL,
 
 	/* SmartCard-HSM */
 	SC_CARD_TYPE_SC_HSM = 26000,
@@ -234,6 +237,7 @@ enum {
 	/* JPKI cards */
 	SC_CARD_TYPE_JPKI_BASE = 31000,
 
+	/* Coolkey cards */
 	SC_CARD_TYPE_COOLKEY_BASE = 32000,
 	SC_CARD_TYPE_COOLKEY_GENERIC,
 
@@ -242,6 +246,7 @@ enum {
 	SC_CARD_TYPE_CAC_GENERIC,
 	SC_CARD_TYPE_CAC_I,
 	SC_CARD_TYPE_CAC_II,
+	SC_CARD_TYPE_CAC_ALT_HID,
 
 	/* nPA cards */
 	SC_CARD_TYPE_NPA = 34000,
@@ -258,6 +263,16 @@ enum {
 	SC_CARD_TYPE_RUTOKEN_ECP_SC,
 	SC_CARD_TYPE_RUTOKEN_LITE,
 	SC_CARD_TYPE_RUTOKEN_LITE_SC,
+
+	/* IDPrime cards */
+	SC_CARD_TYPE_IDPRIME_BASE = 37000,
+	SC_CARD_TYPE_IDPRIME_V1,
+	SC_CARD_TYPE_IDPRIME_V2,
+	SC_CARD_TYPE_IDPRIME_V3,
+	SC_CARD_TYPE_IDPRIME_GENERIC,
+
+	/* eDO cards */
+	SC_CARD_TYPE_EDO = 38000
 };
 
 extern sc_card_driver_t *sc_get_default_driver(void);
@@ -301,6 +316,8 @@ extern sc_card_driver_t *sc_get_cac_driver(void);
 extern sc_card_driver_t *sc_get_cac1_driver(void);
 extern sc_card_driver_t *sc_get_npa_driver(void);
 extern sc_card_driver_t *sc_get_esteid2018_driver(void);
+extern sc_card_driver_t *sc_get_idprime_driver(void);
+extern sc_card_driver_t *sc_get_edo_driver(void);
 
 #ifdef __cplusplus
 }

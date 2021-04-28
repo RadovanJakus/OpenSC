@@ -227,6 +227,26 @@ unsigned short lebytes2ushort(const u8 *buf)
 		| (unsigned short)buf[0];
 }
 
+unsigned long lebytes2ulong(const u8 *buf)
+{
+	if (buf == NULL)
+		return 0UL;
+	return (unsigned long)buf[3] << 24
+		| (unsigned long)buf[2] << 16
+		| (unsigned long)buf[1] << 8
+		| (unsigned long)buf[0];
+}
+
+void set_string(char **strp, const char *value)
+{
+	if (strp == NULL) {
+		return;
+	}
+
+	free(*strp);
+	*strp = value ? strdup(value) : NULL;
+}
+
 void sc_init_oid(struct sc_object_id *oid)
 {
 	int ii;
@@ -254,7 +274,7 @@ int sc_format_oid(struct sc_object_id *oid, const char *in)
 		if (!*q)
 			break;
 
-		if (!(q[0] == '.' && isdigit(q[1])))
+		if (!(q[0] == '.' && isdigit((unsigned char)q[1])))
 			goto out;
 
 		p = q + 1;
@@ -422,7 +442,7 @@ int sc_path_print(char *buf, size_t buflen, const sc_path_t *path)
 	if (buf == NULL || path == NULL)
 		return SC_ERROR_INVALID_ARGUMENTS;
 
-	if (buflen < path->len * 2 + path->aid.len * 2 + 1)
+	if (buflen < path->len * 2 + path->aid.len * 2 + 3)
 		return SC_ERROR_BUFFER_TOO_SMALL;
 
 	buf[0] = '\0';
@@ -535,13 +555,13 @@ const sc_acl_entry_t * sc_file_get_acl_entry(const sc_file_t *file,
 {
 	sc_acl_entry_t *p;
 	static const sc_acl_entry_t e_never = {
-		SC_AC_NEVER, SC_AC_KEY_REF_NONE, {{0, 0, 0, {0}}}, NULL
+		SC_AC_NEVER, SC_AC_KEY_REF_NONE, NULL
 	};
 	static const sc_acl_entry_t e_none = {
-		SC_AC_NONE, SC_AC_KEY_REF_NONE, {{0, 0, 0, {0}}}, NULL
+		SC_AC_NONE, SC_AC_KEY_REF_NONE, NULL
 	};
 	static const sc_acl_entry_t e_unknown = {
-		SC_AC_UNKNOWN, SC_AC_KEY_REF_NONE, {{0, 0, 0, {0}}}, NULL
+		SC_AC_UNKNOWN, SC_AC_KEY_REF_NONE, NULL
 	};
 
 	if (file == NULL || operation >= SC_MAX_AC_OPS) {
@@ -892,7 +912,7 @@ void *sc_mem_secure_alloc(size_t len)
 		len = pages * page_size;
 	}
 
-	p = malloc(len);
+	p = calloc(1, len);
 	if (p == NULL) {
 		return NULL;
 	}
@@ -918,7 +938,13 @@ void sc_mem_secure_free(void *ptr, size_t len)
 void sc_mem_clear(void *ptr, size_t len)
 {
 	if (len > 0)   {
-#ifdef ENABLE_OPENSSL
+#ifdef HAVE_MEMSET_S
+		memset_s(ptr, len, 0, len);
+#elif _WIN32
+		SecureZeroMemory(ptr, len);
+#elif HAVE_EXPLICIT_BZERO
+		explicit_bzero(ptr, len);
+#elif ENABLE_OPENSSL
 		OPENSSL_cleanse(ptr, len);
 #else
 		memset(ptr, 0, len);
@@ -1106,4 +1132,9 @@ unsigned long sc_thread_id(const sc_context_t *ctx)
 		return 0UL;
 	else
 		return ctx->thread_ctx->thread_id();
+}
+
+void sc_free(void *p)
+{
+	free(p);
 }

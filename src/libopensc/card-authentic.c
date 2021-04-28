@@ -93,7 +93,7 @@ unsigned char aid_AuthentIC_3_2[] = {
 static int authentic_select_file(struct sc_card *card, const struct sc_path *path, struct sc_file **file_out);
 static int authentic_process_fci(struct sc_card *card, struct sc_file *file, const unsigned char *buf, size_t buflen);
 static int authentic_get_serialnr(struct sc_card *card, struct sc_serial_number *serial);
-static int authentic_pin_get_policy (struct sc_card *card, struct sc_pin_cmd_data *data);
+static int authentic_pin_get_policy (struct sc_card *card, struct sc_pin_cmd_data *data, struct sc_acl_entry *acls);
 static int authentic_pin_is_verified(struct sc_card *card, struct sc_pin_cmd_data *pin_cmd, int *tries_left);
 static int authentic_select_mf(struct sc_card *card, struct sc_file **file_out);
 static int authentic_card_ctl(struct sc_card *card, unsigned long cmd, void *ptr);
@@ -275,7 +275,7 @@ authentic_decode_pubkey_rsa(struct sc_context *ctx, unsigned char *blob, size_t 
 
 static int
 authentic_parse_credential_data(struct sc_context *ctx, struct sc_pin_cmd_data *pin_cmd,
-		unsigned char *blob, size_t blob_len)
+		struct sc_acl_entry *acls, unsigned char *blob, size_t blob_len)
 {
 	unsigned char *data;
 	size_t data_len;
@@ -298,31 +298,34 @@ authentic_parse_credential_data(struct sc_context *ctx, struct sc_pin_cmd_data *
 	else
 		LOG_TEST_RET(ctx, SC_ERROR_NOT_SUPPORTED, "unsupported Credential type");
 
-	rv = authentic_get_tagged_data(ctx, blob, blob_len, AUTHENTIC_TAG_DOCP_ACLS, &data, &data_len);
-	LOG_TEST_RET(ctx, rv, "failed to get ACLs");
-	sc_log(ctx, "data_len:%"SC_FORMAT_LEN_SIZE_T"u", data_len);
-	if (data_len == 10)   {
-		for (ii=0; ii<5; ii++)   {
-			unsigned char acl = *(data + ii*2);
-			unsigned char cred_id = *(data + ii*2 + 1);
-			unsigned sc = acl * 0x100 + cred_id;
+	/* Parse optional ACLs when requested */
+	if (acls) {
+		rv = authentic_get_tagged_data(ctx, blob, blob_len, AUTHENTIC_TAG_DOCP_ACLS, &data, &data_len);
+		LOG_TEST_RET(ctx, rv, "failed to get ACLs");
+		sc_log(ctx, "data_len:%"SC_FORMAT_LEN_SIZE_T"u", data_len);
+		if (data_len == 10)   {
+			for (ii=0; ii<5; ii++)   {
+				unsigned char acl = *(data + ii*2);
+				unsigned char cred_id = *(data + ii*2 + 1);
+				unsigned sc = acl * 0x100 + cred_id;
 
-			sc_log(ctx, "%i: SC:%X", ii, sc);
-			if (!sc)
-				continue;
+				sc_log(ctx, "%i: SC:%X", ii, sc);
+				if (!sc)
+					continue;
 
-			if (acl & AUTHENTIC_AC_SM_MASK)   {
-				pin_cmd->pin1.acls[ii].method = SC_AC_SCB;
-				pin_cmd->pin1.acls[ii].key_ref = sc;
-			}
-			else if (acl!=0xFF && cred_id)   {
-				sc_log(ctx, "%i: ACL(method:SC_AC_CHV,id:%i)", ii, cred_id);
-				pin_cmd->pin1.acls[ii].method = SC_AC_CHV;
-				pin_cmd->pin1.acls[ii].key_ref = cred_id;
-			}
-			else   {
-				pin_cmd->pin1.acls[ii].method = SC_AC_NEVER;
-				pin_cmd->pin1.acls[ii].key_ref = 0;
+				if (acl & AUTHENTIC_AC_SM_MASK)   {
+					acls[ii].method = SC_AC_SCB;
+					acls[ii].key_ref = sc;
+				}
+				else if (acl!=0xFF && cred_id)   {
+					sc_log(ctx, "%i: ACL(method:SC_AC_CHV,id:%i)", ii, cred_id);
+					acls[ii].method = SC_AC_CHV;
+					acls[ii].key_ref = cred_id;
+				}
+				else   {
+					acls[ii].method = SC_AC_NEVER;
+					acls[ii].key_ref = 0;
+				}
 			}
 		}
 	}
@@ -491,6 +494,11 @@ authentic_init(struct sc_card *card)
 	if (rv != SC_SUCCESS)
 		rv = SC_ERROR_INVALID_CARD;
 
+	/* Free private data on error */
+	if (rv != SC_SUCCESS) {
+		free(card->drv_data);
+		card->drv_data = NULL;
+	}
 	LOG_FUNC_RETURN(ctx, rv);
 }
 
@@ -515,9 +523,8 @@ authentic_erase_binary(struct sc_card *card, unsigned int offs, size_t count, un
 
 	rv = sc_update_binary(card, offs, buf_zero, count, flags);
 	free(buf_zero);
-	LOG_TEST_RET(ctx, rv, "'ERASE BINARY' failed");
 
-	LOG_FUNC_RETURN(ctx, SC_SUCCESS);
+	LOG_FUNC_RETURN(ctx, rv);
 }
 
 
@@ -541,7 +548,10 @@ authentic_set_current_files(struct sc_card *card, struct sc_path *path,
 				file->path = *path;
 
 			rv = authentic_process_fci(card, file, resp, resplen);
-			LOG_TEST_RET(ctx, rv, "cannot set 'current file': FCI process error");
+			if (rv != SC_SUCCESS) {
+				sc_file_free(file);
+				LOG_TEST_RET(ctx, rv, "cannot set 'current file': FCI process error");
+			}
 
 			break;
 		default:
@@ -561,9 +571,11 @@ authentic_set_current_files(struct sc_card *card, struct sc_path *path,
 
 			if (cur_df_path.len)   {
 				if (cur_df_path.len + card->cache.current_df->path.len > sizeof card->cache.current_df->path.value
-						|| cur_df_path.len > sizeof card->cache.current_df->path.value)
+						|| cur_df_path.len > sizeof card->cache.current_df->path.value) {
+					sc_file_free(file);
 					LOG_FUNC_RETURN(ctx, SC_ERROR_UNKNOWN_DATA_RECEIVED);
-				memcpy(card->cache.current_df->path.value + cur_df_path.len,
+				}
+				memmove(card->cache.current_df->path.value + cur_df_path.len,
 						card->cache.current_df->path.value,
 						card->cache.current_df->path.len);
 				memcpy(card->cache.current_df->path.value, cur_df_path.value, cur_df_path.len);
@@ -660,12 +672,12 @@ authentic_reduce_path(struct sc_card *card, struct sc_path *path)
 	cur_path = card->cache.current_df->path;
 
 	if (!memcmp(cur_path.value, "\x3F\x00", 2) && memcmp(in_path.value, "\x3F\x00", 2))   {
-		memmove(in_path.value + 2, in_path.value, in_path.len);
+		memmove(in_path.value + 2, in_path.value, (in_path.len - 2));
 		memcpy(in_path.value, "\x3F\x00", 2);
 		in_path.len += 2;
 	}
 
-	for (offs=0; offs < in_path.len && offs < cur_path.len; offs += 2)   {
+	for (offs = 0; (offs + 1) < in_path.len && (offs + 1) < cur_path.len; offs += 2)   {
 		if (cur_path.value[offs] != in_path.value[offs])
 			break;
 		if (cur_path.value[offs + 1] != in_path.value[offs + 1])
@@ -687,8 +699,8 @@ authentic_debug_select_file(struct sc_card *card, const struct sc_path *path)
 	struct sc_card_cache *cache = &card->cache;
 
 	if (path)
-		sc_log(ctx, "try to select path(type:%i) %s",
-				path->type, sc_print_path(path));
+		sc_log(ctx, "try to select path(type:%i,len=%"SC_FORMAT_LEN_SIZE_T"u) %s",
+				path->type, path->len, sc_print_path(path));
 
 	if (!cache->valid)
 		return;
@@ -752,8 +764,12 @@ authentic_select_file(struct sc_card *card, const struct sc_path *path,
 		memmove(&lpath.value[0], &lpath.value[2], lpath.len - 2);
 		lpath.len -=  2;
 
-		if (!lpath.len)
+		if (lpath.len == 0) {
 			LOG_FUNC_RETURN(ctx, SC_SUCCESS);
+		} else if (file_out != NULL) {
+			sc_file_free(*file_out);
+			*file_out = NULL;
+		}
 	}
 
 	if (lpath.type == SC_PATH_TYPE_PATH && (lpath.len == 2))
@@ -1313,7 +1329,7 @@ authentic_pin_verify(struct sc_card *card, struct sc_pin_cmd_data *pin_cmd)
 
 	memset(prv_data->pins_sha1[pin_cmd->pin_reference], 0, sizeof(prv_data->pins_sha1[0]));
 
-	rv = authentic_pin_get_policy(card, pin_cmd);
+	rv = authentic_pin_get_policy(card, pin_cmd, NULL);
 	LOG_TEST_RET(ctx, rv, "Get 'PIN policy' error");
 
 	if (pin_cmd->pin1.len > (int)pin_cmd->pin1.max_length)
@@ -1350,7 +1366,7 @@ authentic_pin_change_pinpad(struct sc_card *card, unsigned reference, int *tries
 	pin_cmd.cmd = SC_PIN_CMD_CHANGE;
 	pin_cmd.flags |= SC_PIN_CMD_USE_PINPAD | SC_PIN_CMD_NEED_PADDING;
 
-	rv = authentic_pin_get_policy(card, &pin_cmd);
+	rv = authentic_pin_get_policy(card, &pin_cmd, NULL);
 	LOG_TEST_RET(ctx, rv, "Get 'PIN policy' error");
 
 	memset(pin1_data, pin_cmd.pin1.pad_char, sizeof(pin1_data));
@@ -1388,7 +1404,7 @@ authentic_pin_change(struct sc_card *card, struct sc_pin_cmd_data *data, int *tr
 	size_t offs;
 	int rv;
 
-	rv = authentic_pin_get_policy(card, data);
+	rv = authentic_pin_get_policy(card, data, NULL);
 	LOG_TEST_RET(ctx, rv, "Get 'PIN policy' error");
 
 	memset(prv_data->pins_sha1[data->pin_reference], 0, sizeof(prv_data->pins_sha1[0]));
@@ -1448,7 +1464,7 @@ authentic_chv_set_pinpad(struct sc_card *card, unsigned char reference)
 	pin_cmd.cmd = SC_PIN_CMD_UNBLOCK;
 	pin_cmd.flags |= SC_PIN_CMD_USE_PINPAD | SC_PIN_CMD_NEED_PADDING;
 
-	rv = authentic_pin_get_policy(card, &pin_cmd);
+	rv = authentic_pin_get_policy(card, &pin_cmd, NULL);
 	LOG_TEST_RET(ctx, rv, "Get 'PIN policy' error");
 
 	memset(pin_data, pin_cmd.pin1.pad_char, sizeof(pin_data));
@@ -1471,7 +1487,7 @@ authentic_chv_set_pinpad(struct sc_card *card, unsigned char reference)
 
 
 static int
-authentic_pin_get_policy (struct sc_card *card, struct sc_pin_cmd_data *data)
+authentic_pin_get_policy (struct sc_card *card, struct sc_pin_cmd_data *data, struct sc_acl_entry *acls)
 {
 	struct sc_context *ctx = card->ctx;
 	struct sc_apdu apdu;
@@ -1500,7 +1516,7 @@ authentic_pin_get_policy (struct sc_card *card, struct sc_pin_cmd_data *data)
 
 	data->pin1.tries_left = -1;
 
-	rv = authentic_parse_credential_data(ctx, data, apdu.resp, apdu.resplen);
+	rv = authentic_parse_credential_data(ctx, data, acls, apdu.resp, apdu.resplen);
         LOG_TEST_RET(ctx, rv, "Cannot parse credential data");
 
 	data->pin1.encoding = SC_PIN_ENCODING_ASCII;
@@ -1527,6 +1543,7 @@ authentic_pin_reset(struct sc_card *card, struct sc_pin_cmd_data *data, int *tri
 	struct sc_context *ctx = card->ctx;
 	struct authentic_private_data *prv_data = (struct authentic_private_data *) card->drv_data;
 	struct sc_pin_cmd_data pin_cmd, puk_cmd;
+	struct sc_acl_entry acls[SC_MAX_SDO_ACLS];
 	struct sc_apdu apdu;
 	unsigned reference;
 	int rv, ii;
@@ -1541,17 +1558,18 @@ authentic_pin_reset(struct sc_card *card, struct sc_pin_cmd_data *data, int *tri
 	pin_cmd.pin_type = data->pin_type;
 	pin_cmd.pin1.tries_left = -1;
 
-	rv = authentic_pin_get_policy(card, &pin_cmd);
+	memset(&acls, 0, sizeof(acls));
+	rv = authentic_pin_get_policy(card, &pin_cmd, acls);
 	LOG_TEST_RET(ctx, rv, "Get 'PIN policy' error");
 
-	if (pin_cmd.pin1.acls[AUTHENTIC_ACL_NUM_PIN_RESET].method == SC_AC_CHV)   {
+	if (acls[AUTHENTIC_ACL_NUM_PIN_RESET].method == SC_AC_CHV)   {
 		for (ii=0;ii<8;ii++)   {
 			unsigned char mask = 0x01 << ii;
-			if (pin_cmd.pin1.acls[AUTHENTIC_ACL_NUM_PIN_RESET].key_ref & mask)   {
+			if (acls[AUTHENTIC_ACL_NUM_PIN_RESET].key_ref & mask)   {
 				memset(&puk_cmd, 0, sizeof(puk_cmd));
 				puk_cmd.pin_reference = ii + 1;
 
-				rv = authentic_pin_get_policy(card, &puk_cmd);
+				rv = authentic_pin_get_policy(card, &puk_cmd, NULL);
 				LOG_TEST_RET(ctx, rv, "Get 'PIN policy' error");
 
 				if (puk_cmd.pin_type == SC_AC_CHV)
@@ -1627,7 +1645,7 @@ authentic_pin_cmd(struct sc_card *card, struct sc_pin_cmd_data *data, int *tries
 		rv = authentic_pin_reset(card, data, tries_left);
 		break;
 	case SC_PIN_CMD_GET_INFO:
-		rv = authentic_pin_get_policy(card, data);
+		rv = authentic_pin_get_policy(card, data, NULL);
 		break;
 	default:
 		LOG_TEST_RET(ctx, SC_ERROR_NOT_SUPPORTED, "Unsupported PIN command");

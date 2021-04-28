@@ -182,10 +182,14 @@ auth_select_aid(struct sc_card *card)
 	LOG_TEST_RET(card->ctx, rv, "select parent failed");
 
 	sc_format_path("3F00", &tmp_path);
+	sc_file_free(auth_current_df);
+	auth_current_df = NULL;
 	rv = iso_ops->select_file(card, &tmp_path, &auth_current_df);
 	LOG_TEST_RET(card->ctx, rv, "select parent failed");
 
 	sc_format_path("3F00", &card->cache.current_path);
+	sc_file_free(auth_current_ef);
+	auth_current_ef = NULL;
 	sc_file_dup(&auth_current_ef, auth_current_df);
 
 	memcpy(data->aid, aidAuthentIC_V5, lenAidAuthentIC_V5);
@@ -478,6 +482,7 @@ auth_select_file(struct sc_card *card, const struct sc_path *in_path,
 				tmp_file->path.len -= 2;
 
 			sc_file_free(auth_current_df);
+			auth_current_df = NULL;
 			sc_file_dup(&auth_current_df, tmp_file);
 		}
 		else   {
@@ -485,17 +490,21 @@ auth_select_file(struct sc_card *card, const struct sc_path *in_path,
 				sc_concatenate_path(&tmp_file->path, &auth_current_df->path, &path);
 
 				sc_file_free(auth_current_df);
+				auth_current_df = NULL;
 				sc_file_dup(&auth_current_df, tmp_file);
 			}
 			else   {
 				sc_file_free(auth_current_ef);
+				auth_current_ef = NULL;
 
 				sc_file_dup(&auth_current_ef, tmp_file);
 				sc_concatenate_path(&auth_current_ef->path, &auth_current_df->path, &path);
 			}
 		}
-		if (file_out)
+		if (file_out) {
+			sc_file_free(*file_out);
 			sc_file_dup(file_out, tmp_file);
+		}
 
 		sc_file_free(tmp_file);
 	}
@@ -530,7 +539,7 @@ auth_select_file(struct sc_card *card, const struct sc_path *in_path,
 			}
 		}
 
-		if (path.len - offs > 0)   {
+		if (path.len > offs)   {
 			struct sc_path tmp_path;
 
 			memset(&tmp_path, 0, sizeof(struct sc_path));
@@ -970,6 +979,7 @@ auth_create_file(struct sc_card *card, struct sc_file *file)
 	}
 
 	sc_file_free(auth_current_ef);
+	auth_current_ef = NULL;
 	sc_file_dup(&auth_current_ef, file);
 
 	LOG_FUNC_RETURN(card->ctx, rv);
@@ -1843,8 +1853,15 @@ auth_pin_reset_oberthur_style(struct sc_card *card, unsigned int type,
 				"%s: PIN CMD 'VERIFY' with pinpad failed",
 				sc_strerror(rvv));
 
-	if (auth_current_ef)
-		rv = iso_ops->select_file(card, &auth_current_ef->path, &auth_current_ef);
+	if (auth_current_ef) {
+		struct sc_file *ef = NULL;
+		rv = iso_ops->select_file(card, &auth_current_ef->path, &ef);
+		if (rv == SC_SUCCESS) {
+			sc_file_free(auth_current_ef);
+			auth_current_ef = ef;
+		} else
+			sc_file_free(ef);
+	}
 
 	if (rv > 0)
 		rv = 0;
@@ -2051,6 +2068,10 @@ auth_update_binary(struct sc_card *card, unsigned int offset,
 	int rv = 0;
 
 	LOG_FUNC_CALLED(card->ctx);
+
+	if (!auth_current_ef)
+		LOG_TEST_RET(card->ctx, SC_ERROR_INVALID_ARGUMENTS, "Invalid auth_current_ef");
+
 	sc_log(card->ctx, "offset %i; count %"SC_FORMAT_LEN_SIZE_T"u", offset,
 	       count);
 	sc_log(card->ctx, "last selected : magic %X; ef %X",
@@ -2145,12 +2166,16 @@ auth_read_binary(struct sc_card *card, unsigned int offset,
 		key.exponent = bn[0];
 		key.modulus = bn[1];
 
-		if (sc_pkcs15_encode_pubkey_rsa(card->ctx, &key, &out, &out_len)) {
+		if (sc_pkcs15_encode_pubkey_rsa(card->ctx, &key, &out, &out_len) != SC_SUCCESS) {
 			rv = SC_ERROR_INVALID_ASN1_OBJECT;
 			LOG_TEST_GOTO_ERR(card->ctx, rv, "cannot encode RSA public key");
 		}
 		else {
-			rv  = out_len - offset > count ? count : out_len - offset;
+			if (out_len < offset) {
+				rv = SC_ERROR_UNKNOWN_DATA_RECEIVED;
+				goto err;
+			}
+			rv = ((out_len - offset) > count) ? count : (out_len - offset);
 			memcpy(buf, out + offset, rv);
 
 			sc_log_hex(card->ctx, "write_publickey", buf, rv);
@@ -2180,6 +2205,9 @@ auth_read_record(struct sc_card *card, unsigned int nr_rec,
 	sc_log(card->ctx,
 	       "auth_read_record(): nr_rec %i; count %"SC_FORMAT_LEN_SIZE_T"u",
 	       nr_rec, count);
+
+	if (nr_rec > 0xFF)
+		LOG_FUNC_RETURN(card->ctx, SC_ERROR_INVALID_ARGUMENTS);
 
 	sc_format_apdu(card, &apdu, SC_APDU_CASE_2_SHORT, 0xB2, nr_rec, 0);
 	apdu.p2 = (flags & SC_RECORD_EF_ID_MASK) << 3;

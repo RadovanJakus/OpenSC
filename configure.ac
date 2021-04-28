@@ -1,15 +1,15 @@
 dnl -*- mode: m4; -*-
 
-AC_PREREQ(2.60)
+AC_PREREQ(2.68)
 
 define([PRODUCT_NAME], [OpenSC])
 define([PRODUCT_TARNAME], [opensc])
 define([PRODUCT_BUGREPORT], [https://github.com/OpenSC/OpenSC/issues])
 define([PRODUCT_URL], [https://github.com/OpenSC/OpenSC])
 define([PACKAGE_VERSION_MAJOR], [0])
-define([PACKAGE_VERSION_MINOR], [20])
+define([PACKAGE_VERSION_MINOR], [22])
 define([PACKAGE_VERSION_FIX], [0])
-define([PACKAGE_SUFFIX], [])
+define([PACKAGE_SUFFIX], [-rc1])
 
 define([VS_FF_LEGAL_COPYRIGHT], [OpenSC Project])
 define([VS_FF_LEGAL_COMPANY_NAME], [OpenSC Project])
@@ -21,11 +21,13 @@ define([VS_FF_PRODUCT_URL], [https://github.com/OpenSC/OpenSC])
 
 m4_sinclude(version.m4.ci)
 
+m4_define([openssl_minimum_version], [1.0.1])
+
 AC_INIT([PRODUCT_NAME],[PACKAGE_VERSION_MAJOR.PACKAGE_VERSION_MINOR.PACKAGE_VERSION_FIX[]PACKAGE_SUFFIX],[PRODUCT_BUGREPORT],[PRODUCT_TARNAME],[PRODUCT_URL])
 AC_CONFIG_AUX_DIR([.])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
-AM_INIT_AUTOMAKE(foreign 1.10)
+AM_INIT_AUTOMAKE(foreign 1.10 [subdir-objects])
 
 OPENSC_VERSION_MAJOR="PACKAGE_VERSION_MAJOR"
 OPENSC_VERSION_MINOR="PACKAGE_VERSION_MINOR"
@@ -41,10 +43,10 @@ OPENSC_VS_FF_PRODUCT_URL="VS_FF_PRODUCT_URL"
 
 # LT Version numbers, remember to change them just *before* a release.
 #   (Code changed:                      REVISION++)
-#   (Oldest interface removed:          OLDEST++)
+#   (Oldest interface changed/removed:  OLDEST++)
 #   (Interfaces added:                  CURRENT++, REVISION=0)
-OPENSC_LT_CURRENT="6"
-OPENSC_LT_OLDEST="6"
+OPENSC_LT_CURRENT="8"
+OPENSC_LT_OLDEST="7"
 OPENSC_LT_REVISION="0"
 OPENSC_LT_AGE="0"
 OPENSC_LT_AGE="$((${OPENSC_LT_CURRENT}-${OPENSC_LT_OLDEST}))"
@@ -77,7 +79,7 @@ AC_ARG_WITH(
 )
 
 if test "${enable_optimization}" = "no"; then
-	CFLAGS="-O0 -g"
+	CFLAGS="${CFLAGS} -O0 -g"
 fi
 
 dnl Check for some target-specific stuff
@@ -129,12 +131,14 @@ case "${host}" in
 	;;
 esac
 
+AX_CODE_COVERAGE()
+
 AX_CHECK_COMPILE_FLAG([-Wunknown-warning-option], [have_unknown_warning_option="yes"], [have_unknown_warning_option="no"], [-Werror])
 AM_CONDITIONAL([HAVE_UNKNOWN_WARNING_OPTION], [test "${have_unknown_warning_option}" = "yes"])
 
 AC_ARG_ENABLE(
 	[fuzzing],
-	[AS_HELP_STRING([--enable-fuzzing],[enable compile of fuzzing tests @<:@disabled@:>@, note that CFLAGS and FUZZING_LIBS should be set accoringly, e.g. to something like CFLAGS="-fsanitize=address,fuzzer" FUZZING_LIBS="-fsanitize=fuzzer"])],
+	[AS_HELP_STRING([--enable-fuzzing],[enable compile of fuzzing tests @<:@disabled@:>@, note that CFLAGS and FUZZING_LIBS should be set accordingly, e.g. to something like CFLAGS="-fsanitize=address,fuzzer" FUZZING_LIBS="-fsanitize=fuzzer"])],
 	,
 	[enable_fuzzing="no"]
 )
@@ -184,7 +188,7 @@ AC_ARG_ENABLE(
 )
 
 AC_ARG_ENABLE([openssl-secure-malloc],
-    [AC_HELP_STRING([--openssl-secure-malloc=<SIZE_IN_BYTES>],
+    [AS_HELP_STRING([--openssl-secure-malloc=<SIZE_IN_BYTES>],
         [Enable OpenSSL secure memory by specifying its size in bytes, must be a power of 2 @<:@disabled@:>@])],
     [], [enable_openssl_secure_malloc=no])
 AS_IF([test $enable_openssl_secure_malloc != no],
@@ -390,20 +394,19 @@ dnl C Compiler features
 AC_C_INLINE
 
 dnl Checks for header files.
-AC_HEADER_STDC
 AC_HEADER_SYS_WAIT
 AC_HEADER_ASSERT
 AC_CHECK_HEADERS([ \
 	errno.h fcntl.h stdlib.h \
 	inttypes.h string.h strings.h \
-	sys/time.h unistd.h sys/mman.h
+	sys/time.h unistd.h sys/mman.h \
+	sys/endian.h endian.h
 ])
 
 dnl Checks for typedefs, structures, and compiler characteristics.
 AC_C_CONST
 AC_TYPE_UID_T
 AC_TYPE_SIZE_T
-AC_HEADER_TIME
 
 dnl Checks for library functions.
 AC_FUNC_ERROR_AT_LINE
@@ -411,9 +414,22 @@ AC_FUNC_STAT
 AC_FUNC_VPRINTF
 AC_CHECK_FUNCS([ \
 	getpass gettimeofday getline memset mkdir \
-	strdup strerror \
-	strlcpy strlcat strnlen sigaction
+	strdup strerror memset_s explicit_bzero \
+	strnlen sigaction
 ])
+
+# Do not check for strlcpy and strlcat in Linux because it is not implemented
+# and autotools can not detect it in AC_CHECK_DECLS because build does not fail
+# in this test.
+# https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=22192
+case "${host_os}" in
+	linux*)
+		;;
+	*)
+		AC_CHECK_DECLS([strlcpy, strlcat], [], [], [[#include <string.h>]])
+		;;
+esac
+
 AC_CHECK_SIZEOF(void *)
 if test "${ac_cv_sizeof_void_p}" = 8; then
 	LIBRARY_BITNESS="64"
@@ -632,7 +648,7 @@ fi
 
 PKG_CHECK_MODULES(
 	[OPENSSL],
-	[libcrypto >= 0.9.8],
+	[libcrypto >= openssl_minimum_version],
 	[have_openssl="yes"],
 	[AC_CHECK_LIB(
 		[crypto],
@@ -711,7 +727,7 @@ LIBS="$saved_LIBS"
 
 
 AC_ARG_ENABLE(cvcdir,
-              AC_HELP_STRING([--enable-cvcdir=DIR],
+              AS_HELP_STRING([--enable-cvcdir=DIR],
                              [directory containing CV certificates (default is determined by libeac)]),
                              [cvcdir="${enableval}"],
                              [cvcdir=false])
@@ -733,7 +749,7 @@ AC_SUBST(CVCDIR)
 AC_DEFINE_UNQUOTED([CVCDIR], ["${CVCDIR}"], [CVC directory])
 
 AC_ARG_ENABLE(x509dir,
-              AC_HELP_STRING([--enable-x509dir=DIR],
+              AS_HELP_STRING([--enable-x509dir=DIR],
                              [directory containing X.509 certificates (default is determined by libeac)]),
                              [x509dir="${enableval}"],
                              [x509dir=false])
@@ -935,6 +951,7 @@ AC_PATH_PROG(GENGETOPT, gengetopt, not found)
 AC_ARG_VAR([CLANGTIDY],
            [absolute path to clang-tidy used for static code analysis])
 AC_PATH_PROG(CLANGTIDY, clang-tidy, not found)
+TIDY_CHECKS="-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling"
 
 AX_FUNC_GETOPT_LONG
 #AH_BOTTOM([#include "common/compat_getopt.h"])
@@ -1042,6 +1059,7 @@ AC_SUBST([PROFILE_DIR])
 AC_SUBST([PROFILE_DIR_DEFAULT])
 AC_SUBST([OPTIONAL_NOTIFY_CFLAGS])
 AC_SUBST([OPTIONAL_NOTIFY_LIBS])
+AC_SUBST([TIDY_CHECKS])
 
 AM_CONDITIONAL([ENABLE_MAN], [test "${enable_man}" = "yes"])
 AM_CONDITIONAL([ENABLE_THREAD_LOCKING], [test "${enable_thread_locking}" = "yes"])
@@ -1068,10 +1086,10 @@ AS_IF([test "${enable_shared}" = "yes"], [AC_DEFINE([ENABLE_SHARED], [1], [Enabl
 
 if test "${enable_pedantic}" = "yes"; then
 	enable_strict="yes";
-	CFLAGS="${CFLAGS} -pedantic"
+	CFLAGS="-pedantic ${CFLAGS}"
 fi
 if test "${enable_strict}" = "yes"; then
-	CFLAGS="${CFLAGS} -Wall -Wextra -Wno-unused-parameter -Werror"
+	CFLAGS="-Wall -Wextra -Wno-unused-parameter -Werror -Wstrict-aliasing=2 ${CFLAGS}"
 fi
 
 AC_CONFIG_FILES([
@@ -1096,6 +1114,7 @@ AC_CONFIG_FILES([
 	src/tests/regression/Makefile
 	src/tests/p11test/Makefile
 	src/tests/fuzzing/Makefile
+	src/tests/unittests/Makefile
 	src/tools/Makefile
 	src/tools/versioninfo-tools.rc
 	src/tools/versioninfo-opensc-notify.rc
@@ -1157,6 +1176,7 @@ SM default module:       ${DEFAULT_SM_MODULE}
 SM default path:         $(eval eval eval echo "${DEFAULT_SM_MODULE_PATH}")
 DNIe UI support:         ${enable_dnie_ui}
 Notification support:    ${enable_notify}
+Code coverage:           ${enable_code_coverage}
 
 PC/SC default provider:  ${DEFAULT_PCSC_PROVIDER}
 PKCS11 default provider: $(eval eval eval echo "${DEFAULT_PKCS11_PROVIDER}")

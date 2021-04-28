@@ -39,6 +39,7 @@ extern "C" {
 #include "libopensc/opensc.h"
 #include "libopensc/log.h"
 #include "libopensc/cards.h"
+#include "scconf/scconf.h"
 
 #ifdef ENABLE_OPENSSL
 #include "libopensc/sc-ossl-compat.h"
@@ -117,6 +118,21 @@ unsigned short bebytes2ushort(const u8 *buf);
  * @return       the converted value
  */
 unsigned short lebytes2ushort(const u8 *buf);
+/**
+ * Convert 4 bytes in little endian order into an unsigned long
+ * @param  buf   the byte array of 4 bytes
+ * @return       the converted value
+ */
+unsigned long lebytes2ulong(const u8 *buf);
+
+/* Usable for setting string elements of token info, which
+ * are either initialized to NULL or we need to clean
+ * previous value.
+ *
+ * @param   strp   The pointer where to store string
+ * @param   value  The string to store (is strdupped)
+ */
+void set_string(char **strp, const char *value);
 
 #define BYTES4BITS(num)  (((num) + 7) / 8)    /* number of bytes necessary to hold 'num' bits */
 
@@ -135,6 +151,12 @@ int _sc_card_add_symmetric_alg(sc_card_t *card, unsigned int algorithm,
 int _sc_card_add_rsa_alg(struct sc_card *card, unsigned int key_length,
 		unsigned long flags, unsigned long exponent);
 int _sc_card_add_ec_alg(struct sc_card *card, unsigned int key_length,
+		unsigned long flags, unsigned long ext_flags,
+		struct sc_object_id *curve_oid);
+int _sc_card_add_eddsa_alg(struct sc_card *card, unsigned int key_length,
+		unsigned long flags, unsigned long ext_flags,
+		struct sc_object_id *curve_oid);
+int _sc_card_add_xeddsa_alg(struct sc_card *card, unsigned int key_length,
 		unsigned long flags, unsigned long ext_flags,
 		struct sc_object_id *curve_oid);
 

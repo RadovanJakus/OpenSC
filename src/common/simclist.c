@@ -28,7 +28,9 @@
 #if !defined(_WIN32)
 #include <arpa/inet.h>  /* for htons() */
 #include <unistd.h>
+#ifdef HAVE_SYS_TIME_H
 #include <sys/time.h>   /* for gettimeofday() */
+#endif
 #include <stdint.h>
 #else
 #include <winsock2.h>
@@ -71,7 +73,9 @@
 
 /* disable asserts */
 #ifndef SIMCLIST_DEBUG
+#ifndef NDEBUG
 #define NDEBUG
+#endif
 #endif
 
 #include <assert.h>

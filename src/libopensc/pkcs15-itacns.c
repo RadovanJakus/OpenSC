@@ -168,18 +168,11 @@ static const struct {
  * Utility functions
  */
 
-static void set_string(char **strp, const char *value)
-{
-	if (*strp)
-		free(*strp);
-	*strp = value ? strdup(value) : NULL;
-}
-
 static int loadFile(const sc_pkcs15_card_t *p15card, const sc_path_t *path,
 	u8 *buf, const size_t buflen)
 {
 	int sc_res;
-	SC_FUNC_CALLED(p15card->card->ctx, 1);
+	SC_FUNC_CALLED(p15card->card->ctx, SC_LOG_DEBUG_NORMAL);
 
 	sc_res = sc_select_file(p15card->card, path, NULL);
 	if(sc_res != SC_SUCCESS)
@@ -207,16 +200,16 @@ static int itacns_add_cert(sc_pkcs15_card_t *p15card,
 	sc_pkcs15_cert_t *cert;
 #endif
 
-	SC_FUNC_CALLED(p15card->card->ctx, 1);
-	
+	SC_FUNC_CALLED(p15card->card->ctx, SC_LOG_DEBUG_NORMAL);
+
 	if(type != SC_PKCS15_TYPE_CERT_X509) {
-		sc_log(p15card->card->ctx, 
+		sc_log(p15card->card->ctx,
 			"Cannot add a certificate of a type other than X.509");
 		return 1;
 	}
-	
+
 	*ext_info_ok = 0;
-	
+
 
 	memset(&info, 0, sizeof(info));
 	memset(&obj,  0, sizeof(obj));
@@ -273,7 +266,7 @@ static int itacns_add_pubkey(sc_pkcs15_card_t *p15card,
 	sc_pkcs15_pubkey_info_t info;
 	sc_pkcs15_object_t obj;
 
-	SC_FUNC_CALLED(p15card->card->ctx, 1);
+	SC_FUNC_CALLED(p15card->card->ctx, SC_LOG_DEBUG_NORMAL);
 
 	memset(&info, 0, sizeof(info));
 	memset(&obj,  0, sizeof(obj));
@@ -309,10 +302,10 @@ static int itacns_add_prkey(sc_pkcs15_card_t *p15card,
 	sc_pkcs15_prkey_info_t info;
 	sc_pkcs15_object_t obj;
 
-	SC_FUNC_CALLED(p15card->card->ctx, 1);
+	SC_FUNC_CALLED(p15card->card->ctx, SC_LOG_DEBUG_NORMAL);
 
 	if(type != SC_PKCS15_TYPE_PRKEY_RSA) {
-		sc_log(p15card->card->ctx, 
+		sc_log(p15card->card->ctx,
 			"Cannot add a private key of a type other than RSA");
 		return 1;
 	}
@@ -348,7 +341,7 @@ static int itacns_add_pin(sc_pkcs15_card_t *p15card,
 	struct sc_pkcs15_auth_info pin_info;
 	struct sc_pkcs15_object pin_obj;
 
-	SC_FUNC_CALLED(p15card->card->ctx, 1);
+	SC_FUNC_CALLED(p15card->card->ctx, SC_LOG_DEBUG_NORMAL);
 
 	memset(&pin_info, 0, sizeof(pin_info));
 	pin_info.auth_type = SC_PKCS15_PIN_AUTH_TYPE_PIN;
@@ -386,7 +379,7 @@ static int hextoint(char *src, unsigned int len)
 
 	if(len >= sizeof(hex))
 		return -1;
-	strncpy(hex, src, len+1);
+	strncpy(hex, src, len);
 	hex[len] = '\0';
 	res = strtol(hex, &end, 0x10);
 	if(end != (char*)&hex[len])
@@ -395,17 +388,30 @@ static int hextoint(char *src, unsigned int len)
 }
 
 static int get_name_from_EF_DatiPersonali(unsigned char *EFdata,
-	char name[], int name_len)
+	size_t EFdata_len, char name[], int name_len)
 {
+	const unsigned int EF_personaldata_maxlen = 400;
+	const unsigned int tlv_length_size = 6;
+	char *file = NULL;
+	int file_size;
+
 	/*
 	 * Bytes 0-5 contain the ASCII encoding of the following TLV
 	 * structure's total size, in base 16.
 	 */
-
-	const unsigned int EF_personaldata_maxlen = 400;
-	const unsigned int tlv_length_size = 6;
-	char *file = (char*)&EFdata[tlv_length_size];
-	int file_size = hextoint((char*)EFdata, tlv_length_size);
+	if (EFdata_len < tlv_length_size) {
+		/* We need at least 6 bytes for file length here */
+		return -1;
+	}
+	file_size = hextoint((char*)EFdata, tlv_length_size);
+	if (EFdata_len < (file_size + tlv_length_size)) {
+		/* Inconsistent external file length and internal file length
+		 * suggests we are trying to process junk data.
+		 * If the internal data length is shorter, the data can be padded,
+		 * but we should be fine as we will not go behind the buffer limits */
+		return -1;
+	}
+	file = (char*)&EFdata[tlv_length_size];
 
 	enum {
 		f_issuer_code = 0,
@@ -434,7 +440,7 @@ static int get_name_from_EF_DatiPersonali(unsigned char *EFdata,
 	int i=0; /* offset inside the file */
 	int f; /* field number */
 
-	if(file_size < 0)
+	if (file_size < 0)
 		return -1;
 
 	/*
@@ -449,17 +455,16 @@ static int get_name_from_EF_DatiPersonali(unsigned char *EFdata,
 
 	for(f=0; f<f_first_name+1; f++) {
 		int field_size;
+
 		/* Don't read beyond the allocated buffer */
-		if(i > file_size)
+		if(i+2 > file_size)
 			return -1;
-
 		field_size = hextoint((char*) &file[i], 2);
-		if((field_size < 0) || (field_size+i > file_size))
-			return -1;
-
 		i += 2;
 
-		if(field_size >= (int)sizeof(fields[f].value))
+		if (field_size < 0
+				|| i + field_size > file_size
+				|| field_size >= (int)sizeof(fields[f].value))
 			return -1;
 
 		fields[f].len = field_size;
@@ -525,7 +530,7 @@ static int itacns_add_data_files(sc_pkcs15_card_t *p15card)
 	rv = sc_pkcs15_get_objects(p15card, SC_PKCS15_TYPE_DATA_OBJECT,
 		objs, 32);
 	if(rv < 0) {
-		sc_log(p15card->card->ctx, 
+		sc_log(p15card->card->ctx,
 			"Data enumeration failed");
 		return SC_SUCCESS;
 	}
@@ -537,7 +542,7 @@ static int itacns_add_data_files(sc_pkcs15_card_t *p15card)
 	}
 
 	if(i>=32) {
-		sc_log(p15card->card->ctx, 
+		sc_log(p15card->card->ctx,
 			"Could not find EF_DatiPersonali: "
 			"keeping generic card name");
 		return SC_SUCCESS;
@@ -545,24 +550,28 @@ static int itacns_add_data_files(sc_pkcs15_card_t *p15card)
 
 	rv = sc_pkcs15_read_data_object(p15card, cinfo, &p15_personaldata);
 	if (rv) {
-		sc_log(p15card->card->ctx, 
+		sc_log(p15card->card->ctx,
 			"Could not read EF_DatiPersonali: "
 			"keeping generic card name");
 		return SC_SUCCESS;
 	}
 
-	{
+	if (p15_personaldata->data) {
 		char fullname[160];
-		if(get_name_from_EF_DatiPersonali(p15_personaldata->data,
-			fullname, sizeof(fullname))) {
-			sc_log(p15card->card->ctx, 
+		if (get_name_from_EF_DatiPersonali(p15_personaldata->data,
+			p15_personaldata->data_len, fullname, sizeof(fullname))) {
+			sc_log(p15card->card->ctx,
 				"Could not parse EF_DatiPersonali: "
 				"keeping generic card name");
 			sc_pkcs15_free_data_object(p15_personaldata);
+			free(cinfo->data.value);
+			cinfo->data.value = NULL;
 			return SC_SUCCESS;
 		}
 		set_string(&p15card->tokeninfo->label, fullname);
 	}
+	free(cinfo->data.value);
+	cinfo->data.value = NULL;
 	sc_pkcs15_free_data_object(p15_personaldata);
 	return SC_SUCCESS;
 }
@@ -661,7 +670,7 @@ static int itacns_check_and_add_keyset(sc_pkcs15_card_t *p15card,
 
 	/* Certificate */
 	if (!cert_path) {
-		sc_log(p15card->card->ctx, 
+		sc_log(p15card->card->ctx,
 			"We cannot use keys without a matching certificate");
 		return SC_ERROR_NOT_SUPPORTED;
 	}
@@ -671,7 +680,7 @@ static int itacns_check_and_add_keyset(sc_pkcs15_card_t *p15card,
 	if (r == SC_ERROR_FILE_NOT_FOUND)
 		return 0;
 	if (r != SC_SUCCESS) {
-		sc_log(p15card->card->ctx, 
+		sc_log(p15card->card->ctx,
 			"Could not find certificate for %s", label);
 		return r;
 	}
@@ -726,7 +735,7 @@ static int itacns_check_and_add_keyset(sc_pkcs15_card_t *p15card,
 			prkey_usage_flags |= SC_PKCS15_PRKEY_USAGE_DECRYPT;
 		}
 #else /* ENABLE_OPENSSL */
-		sc_log(p15card->card->ctx, 
+		sc_log(p15card->card->ctx,
 			"Extended certificate info retrieved without OpenSSL. "
 			"How is this possible?");
 		return SC_ERROR_INTERNAL;
@@ -760,7 +769,7 @@ static int itacns_init(sc_pkcs15_card_t *p15card)
 	int found_certs;
 	int card_is_cie_v1, cns0_secenv;
 
-	SC_FUNC_CALLED(p15card->card->ctx, 1);
+	SC_FUNC_CALLED(p15card->card->ctx, SC_LOG_DEBUG_NORMAL);
 
 	set_string(&p15card->tokeninfo->label, p15card->card->name);
 	if(p15card->card->drv_data) {
@@ -848,7 +857,7 @@ static int itacns_init(sc_pkcs15_card_t *p15card)
 
 	/* Did we find anything? */
 	if (certificate_count == 0)
-		sc_debug(p15card->card->ctx, SC_LOG_DEBUG_VERBOSE,
+		sc_debug(p15card->card->ctx, SC_LOG_DEBUG_NORMAL,
 			"Warning: no certificates found!");
 
 	/* Back to Master File */
@@ -863,7 +872,7 @@ static int itacns_init(sc_pkcs15_card_t *p15card)
 int sc_pkcs15emu_itacns_init_ex(sc_pkcs15_card_t *p15card, struct sc_aid *aid)
 {
 	sc_card_t *card = p15card->card;
-	SC_FUNC_CALLED(card->ctx, 1);
+	SC_FUNC_CALLED(card->ctx, SC_LOG_DEBUG_NORMAL);
 
 	/* Check card */
 	if (! (

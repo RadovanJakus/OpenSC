@@ -43,7 +43,7 @@ sc_pkcs15_read_data_object(struct sc_pkcs15_card *p15card,
 		const struct sc_pkcs15_data_info *info,
 		struct sc_pkcs15_data **data_object_out)
 {
-        struct sc_context *ctx = p15card->card->ctx;
+	struct sc_context *ctx = p15card->card->ctx;
 	struct sc_pkcs15_data *data_object;
 	struct sc_pkcs15_der der;
 	int r;
@@ -57,9 +57,8 @@ sc_pkcs15_read_data_object(struct sc_pkcs15_card *p15card,
 		LOG_TEST_RET(ctx, r, "Cannot get DATA object data");
 	}
 
-	sc_der_copy(&der, &info->data);
-	if (!der.value)
-		LOG_TEST_RET(ctx, SC_ERROR_OUT_OF_MEMORY, "Cannot allocate memory for der value");
+	r = sc_der_copy(&der, &info->data);
+	LOG_TEST_RET(ctx, r, "Cannot allocate memory for der value");
 
 	data_object = calloc(sizeof(struct sc_pkcs15_data), 1);
 	if (!data_object)   {
@@ -123,7 +122,10 @@ int sc_pkcs15_decode_dodf_entry(struct sc_pkcs15_card *p15card,
 		return r;
 	LOG_TEST_RET(ctx, r, "ASN.1 decoding failed");
 
-	if (!p15card->app || !p15card->app->ddo.aid.len)   {
+	if (!p15card->app || !p15card->app->ddo.aid.len) {
+		if (!p15card->file_app) {
+			return SC_ERROR_INTERNAL;
+		}
 		r = sc_pkcs15_make_absolute_path(&p15card->file_app->path, &info.path);
 		if (r < 0)
 			return r;

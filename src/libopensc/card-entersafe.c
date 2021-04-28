@@ -352,10 +352,10 @@ static int entersafe_transmit_apdu(sc_card_t *card, sc_apdu_t *apdu,
 	 size_t cipher_data_size,mac_data_size;
 	 int blocks;
 	 int r=SC_SUCCESS;
-	u8 *sbuf=NULL;
-	size_t ssize=0;
+	 u8 *sbuf=NULL;
+	 size_t ssize=0;
 
-	SC_FUNC_CALLED(card->ctx, SC_LOG_DEBUG_VERBOSE);
+	 SC_FUNC_CALLED(card->ctx, SC_LOG_DEBUG_VERBOSE);
 
 	 assert(card);
 	 assert(apdu);
@@ -363,11 +363,11 @@ static int entersafe_transmit_apdu(sc_card_t *card, sc_apdu_t *apdu,
 	 if((cipher||mac) && (!key||(keylen!=8 && keylen!=16)))
 		  SC_FUNC_RETURN(card->ctx, SC_LOG_DEBUG_VERBOSE, SC_ERROR_INVALID_ARGUMENTS);
 
-	r = sc_apdu_get_octets(card->ctx, apdu, &sbuf, &ssize, SC_PROTO_RAW);
-	if (r == SC_SUCCESS)
-		sc_apdu_log(card->ctx, sbuf, ssize, 1);
-	if(sbuf)
-		free(sbuf);
+	 r = sc_apdu_get_octets(card->ctx, apdu, &sbuf, &ssize, SC_PROTO_RAW);
+	 if (r == SC_SUCCESS)
+		  sc_apdu_log(card->ctx, sbuf, ssize, 1);
+	 if(sbuf)
+		  free(sbuf);
 
 	 if(cipher)
 	 {
@@ -1393,7 +1393,7 @@ static int entersafe_gen_key(sc_card_t *card, sc_entersafe_gen_key_data *data)
 
 	r = entersafe_transmit_apdu(card, &apdu,0,0,0,0);
 	LOG_TEST_RET(card->ctx, r, "APDU transmit failed");
-	LOG_TEST_RET(card->ctx, sc_check_sw(card,apdu.sw1,apdu.sw2),"EnterSafe generate keypair failed");
+	LOG_TEST_RET(card->ctx, sc_check_sw(card,apdu.sw1,apdu.sw2),"EnterSafe generate key pair failed");
 
 	/* read public key via READ PUBLIC KEY */
 	sc_format_apdu(card, &apdu, SC_APDU_CASE_2_SHORT, 0xE6,  0x2A, data->key_id);

@@ -114,7 +114,7 @@ add_supported_mechs(test_cert_t *o)
 		if (token.num_rsa_mechs > 0 ) {
 			/* Get supported mechanisms by token */
 			o->num_mechs = token.num_rsa_mechs;
-			for (i = 0; i <= token.num_rsa_mechs; i++) {
+			for (i = 0; i < token.num_rsa_mechs; i++) {
 				o->mechs[i].mech = token.rsa_mechs[i].mech;
 				o->mechs[i].result_flags = 0;
 				o->mechs[i].usage_flags =
@@ -131,7 +131,7 @@ add_supported_mechs(test_cert_t *o)
 	} else if (o->type == EVP_PK_EC) {
 		if (token.num_ec_mechs > 0 ) {
 			o->num_mechs = token.num_ec_mechs;
-			for (i = 0; i <= token.num_ec_mechs; i++) {
+			for (i = 0; i < token.num_ec_mechs; i++) {
 				o->mechs[i].mech = token.ec_mechs[i].mech;
 				o->mechs[i].result_flags = 0;
 				o->mechs[i].usage_flags =
@@ -143,6 +143,38 @@ add_supported_mechs(test_cert_t *o)
 			o->mechs[0].mech = CKM_ECDSA;
 			o->mechs[0].result_flags = 0;
 			o->mechs[0].usage_flags = CKF_SIGN | CKF_VERIFY;
+		}
+	} else if (o->type == EVP_PKEY_ED25519) {
+		if (token.num_ed_mechs > 0 ) {
+			o->num_mechs = token.num_ed_mechs;
+			for (i = 0; i < token.num_ed_mechs; i++) {
+				o->mechs[i].mech = token.ed_mechs[i].mech;
+				o->mechs[i].result_flags = 0;
+				o->mechs[i].usage_flags =
+					token.ed_mechs[i].usage_flags;
+			}
+		} else {
+			/* Use the default list */
+			o->num_mechs = 1;
+			o->mechs[0].mech = CKM_EDDSA;
+			o->mechs[0].result_flags = 0;
+			o->mechs[0].usage_flags = CKF_SIGN | CKF_VERIFY;
+		}
+	} else if (o->type == EVP_PKEY_X25519) {
+		if (token.num_montgomery_mechs > 0 ) {
+			o->num_mechs = token.num_montgomery_mechs;
+			for (i = 0; i < token.num_ed_mechs; i++) {
+				o->mechs[i].mech = token.montgomery_mechs[i].mech;
+				o->mechs[i].result_flags = 0;
+				o->mechs[i].usage_flags =
+					token.montgomery_mechs[i].usage_flags;
+			}
+		} else {
+			/* Use the default list */
+			o->num_mechs = 1;
+			o->mechs[0].mech = CKM_ECDH1_DERIVE;
+			o->mechs[0].result_flags = 0;
+			o->mechs[0].usage_flags = CKF_DERIVE;
 		}
 	}
 }
@@ -399,8 +431,127 @@ int callback_public_keys(test_certs_t *objects,
 			EC_KEY_set_group(o->key.ec, ecgroup);
 			o->bits = EC_GROUP_get_degree(ecgroup);
 		}
+	} else if (o->key_type == CKK_EC_EDWARDS
+		|| o->key_type == CKK_EC_MONTGOMERY) {
+		EVP_PKEY *key = NULL;
+		ASN1_PRINTABLESTRING *curve = NULL;
+		ASN1_OBJECT *obj = NULL;
+		const unsigned char *a;
+		ASN1_OCTET_STRING *os;
+		int evp_type;
+
+		a = template[6].pValue;
+		if (d2i_ASN1_PRINTABLESTRING(&curve, &a, (long)template[6].ulValueLen) != NULL) {
+			switch (o->key_type) {
+			case CKK_EC_EDWARDS:
+				if (strcmp((char *)curve->data, "edwards25519")) {
+					debug_print(" [WARN %s ] Unknown curve name. "
+						" expected edwards25519, got %s", o->id_str, curve->data);
+					return -1;
+				}
+				evp_type = EVP_PKEY_ED25519;
+				break;
+			case CKK_EC_MONTGOMERY:
+				if (strcmp((char *)curve->data, "curve25519")) {
+					debug_print(" [WARN %s ] Unknown curve name. "
+						" expected curve25519, got %s", o->id_str, curve->data);
+					return -1;
+				}
+				evp_type = EVP_PKEY_X25519;
+				break;
+			default:
+				debug_print(" [WARN %s ] Unknown key type %lu", o->id_str, o->key_type);
+				return -1;
+			}
+			ASN1_PRINTABLESTRING_free(curve);
+		} else if (d2i_ASN1_OBJECT(&obj, &a, (long)template[6].ulValueLen) != NULL) {
+			int nid = OBJ_obj2nid(obj);
+			switch (o->key_type) {
+			case CKK_EC_EDWARDS:
+				if (nid != NID_ED25519) {
+					debug_print(" [WARN %s ] Unknown OID. "
+						" expected NID_ED25519 (%d), got %d", o->id_str, NID_ED25519, nid);
+					return -1;
+				}
+				evp_type = EVP_PKEY_ED25519;
+				break;
+			case CKK_EC_MONTGOMERY:
+				if (nid != NID_X25519) {
+					debug_print(" [WARN %s ] Unknown OID. "
+						" expected NID_X25519 (%d), got %d", o->id_str, NID_X25519, nid);
+					return -1;
+				}
+				evp_type = EVP_PKEY_X25519;
+				break;
+			default:
+				debug_print(" [WARN %s ] Unknown key type %lu", o->id_str, o->key_type);
+				return -1;
+			}
+			ASN1_OBJECT_free(obj);
+		} else {
+			debug_print(" [WARN %s ] Failed to convert EC_PARAMS"
+				" to curve name or object id", o->id_str);
+			return -1;
+		}
+
+		/* PKCS#11-compliant modules should return ASN1_OCTET_STRING */
+		a = template[7].pValue;
+		os = d2i_ASN1_OCTET_STRING(NULL, &a, (long)template[7].ulValueLen);
+		if (!os) {
+			debug_print(" [WARN %s ] Can not decode EC_POINT", o->id_str);
+			return -1;
+		}
+		if (os->length != 32) {
+			debug_print(" [WARN %s ] Invalid length of EC_POINT value", o->id_str);
+			return -1;
+		}
+		key = EVP_PKEY_new_raw_public_key(evp_type, NULL,
+			(const uint8_t *)os->data,
+			os->length);
+		if (key == NULL) {
+			debug_print(" [WARN %s ] Out of memory", o->id_str);
+			ASN1_STRING_free(os);
+			return -1;
+		}
+		if (o->key.pkey != NULL) {
+			unsigned char *pub = NULL;
+			size_t publen = 0;
+
+			/* TODO check EVP_PKEY type */
+
+			if (EVP_PKEY_get_raw_public_key(o->key.pkey, NULL, &publen) != 1) {
+				debug_print(" [WARN %s ] Can not get size of the key", o->id_str);
+				ASN1_STRING_free(os);
+				return -1;
+			}
+			pub = malloc(publen);
+			if (pub == NULL) {
+				debug_print(" [WARN %s ] Out of memory", o->id_str);
+				ASN1_STRING_free(os);
+				return -1;
+			}
+
+			if (EVP_PKEY_get_raw_public_key(o->key.pkey, pub, &publen) != 1 ||
+				publen != (size_t)os->length ||
+				memcmp(pub, os->data, publen) != 0) {
+				debug_print(" [WARN %s ] Got different public"
+					"key then from the certificate",
+					o->id_str);
+				free(pub);
+				ASN1_STRING_free(os);
+				return -1;
+			}
+			free(pub);
+			EVP_PKEY_free(key);
+			o->verify_public = 1;
+		} else { /* store the public key for future use */
+			o->type = evp_type;
+			o->key.pkey = key;
+			o->bits = 255;
+		}
+		ASN1_STRING_free(os);
 	} else {
-		debug_print(" [WARN %s ] non-RSA, non-EC key. Key type: %02lX",
+		debug_print(" [WARN %s ] unknown key. Key type: %02lX",
 			o->id_str, o->key_type);
 		return -1;
 	}
@@ -422,7 +573,7 @@ int search_objects(test_certs_t *objects, token_info_t *info,
 	CK_OBJECT_HANDLE object_handle = CK_INVALID_HANDLE;
 	CK_OBJECT_HANDLE_PTR object_handles = NULL;
 	unsigned long i = 0, objects_length = 0;
-	int j;
+	int j, ret = -1;
 
 	/* FindObjects first
 	 * https://wiki.oasis-open.org/pkcs11/CommonBugs
@@ -439,16 +590,18 @@ int search_objects(test_certs_t *objects, token_info_t *info,
 			break;
 		if (rv != CKR_OK) {
 			fprintf(stderr, "C_FindObjects: rv = 0x%.8lX\n", rv);
-			return -1;
+			goto out;
 		}
 		/* store handle */
 		if (i >= objects_length) {
+			CK_OBJECT_HANDLE_PTR new_object_handles = NULL;
 			objects_length += 4; // do not realloc after each row
-			object_handles = realloc(object_handles, objects_length * sizeof(CK_OBJECT_HANDLE));
-			if (object_handles == NULL) {
+			new_object_handles = realloc(object_handles, objects_length * sizeof(CK_OBJECT_HANDLE));
+			if (new_object_handles == NULL) {
 		 		fail_msg("Realloc failed. Need to store object handles.\n");
-				return -1;
+				goto out;
 			}
+			object_handles = new_object_handles;
 		}
 		object_handles[i++] = object_handle;
 	}
@@ -458,7 +611,7 @@ int search_objects(test_certs_t *objects, token_info_t *info,
 	if (rv != CKR_OK) {
 		fprintf(stderr, "C_FindObjectsFinal: rv = 0x%.8lX\n", rv);
  		fail_msg("Could not find certificate.\n");
-		return -1;
+		goto out;
 	}
 
 	for (i = 0; i < objects_length; i++) {
@@ -475,7 +628,7 @@ int search_objects(test_certs_t *objects, token_info_t *info,
 				continue;
 			} else if (rv != CKR_OK) {
 				fail_msg("C_GetAttributeValue: rv = 0x%.8lX\n", rv);
-				return -1;
+				goto out;
 			}
 
 			/* Allocate memory to hold the data we want */
@@ -485,7 +638,7 @@ int search_objects(test_certs_t *objects, token_info_t *info,
 				template[j].pValue = malloc(template[j].ulValueLen);
 				if (template[j].pValue == NULL) {
 					fail_msg("malloc failed");
-					return -1;
+					goto out;
 				}
 			}
 			/* Call again to get actual attribute */
@@ -493,7 +646,7 @@ int search_objects(test_certs_t *objects, token_info_t *info,
 				&(template[j]), 1);
 			if (rv != CKR_OK) {
 				fail_msg("C_GetAttributeValue: rv = 0x%.8lX\n", rv);
-				return -1;
+				goto out;
 			}
 		}
 
@@ -502,8 +655,10 @@ int search_objects(test_certs_t *objects, token_info_t *info,
 		for (j = 0; j < template_size; j++)
 			free(template[j].pValue);
 	}
+	ret = 0;
+out:
 	free(object_handles);
-	return 0;
+	return ret;
 }
 
 void search_for_all_objects(test_certs_t *objects, token_info_t *info)
@@ -573,10 +728,15 @@ void clean_all_objects(test_certs_t *objects) {
 		free(objects->data[i].label);
 		X509_free(objects->data[i].x509);
 		if (objects->data[i].key_type == CKK_RSA &&
-		    objects->data[i].key.rsa != NULL)
+		    objects->data[i].key.rsa != NULL) {
 			RSA_free(objects->data[i].key.rsa);
-		else if (objects->data[i].key.ec != NULL)
+		} else if (objects->data[i].key_type == CKK_EC &&
+			objects->data[i].key.ec != NULL) {
 			EC_KEY_free(objects->data[i].key.ec);
+		} else if (objects->data[i].key_type == CKK_EC_EDWARDS &&
+			objects->data[i].key.pkey != NULL) {
+			EVP_PKEY_free(objects->data[i].key.pkey);
+		}
 	}
 	free(objects->data);
 }
@@ -602,12 +762,18 @@ const char *get_mechanism_name(int mech_id)
 			return "ECDSA";
 		case CKM_ECDSA_SHA1:
 			return "ECDSA_SHA1";
+		case CKM_ECDSA_SHA224:
+			return "ECDSA_SHA224";
 		case CKM_ECDSA_SHA256:
 			return "ECDSA_SHA256";
 		case CKM_ECDSA_SHA384:
 			return "ECDSA_SHA384";
 		case CKM_ECDSA_SHA512:
 			return "ECDSA_SHA512";
+		case CKM_EDDSA:
+			return "EDDSA";
+		case CKM_XEDDSA:
+			return "XEDDSA";
 		case CKM_ECDH1_DERIVE:
 			return "ECDH1_DERIVE";
 		case CKM_ECDH1_COFACTOR_DERIVE:
@@ -644,6 +810,10 @@ const char *get_mechanism_name(int mech_id)
 			return "SHA512_HMAC";
 		case CKM_RSA_PKCS_OAEP:
 			return "RSA_PKCS_OAEP";
+		case CKM_RIPEMD160:
+			return "RIPEMD160";
+		case CKM_GOSTR3411:
+			return "GOSTR3411";
 		case CKM_MD5:
 			return "MD5";
 		case CKM_SHA_1:
@@ -656,6 +826,14 @@ const char *get_mechanism_name(int mech_id)
 			return "SHA384";
 		case CKM_SHA512:
 			return "SHA512";
+		case CKM_SHA3_256:
+			return "SHA3_256";
+		case CKM_SHA3_224:
+			return "SHA3_224";
+		case CKM_SHA3_384:
+			return "SHA3_384";
+		case CKM_SHA3_512:
+			return "SHA3_512";
 		default:
 			sprintf(name_buffer, "0x%.8X", mech_id);
 			return name_buffer;

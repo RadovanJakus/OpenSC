@@ -50,12 +50,14 @@ static int read_file(struct sc_card *card, const char *file, u8 *buf,
 
 	sc_format_path(file, &path);
 	r = sc_select_file(card, &path, &fid);
-	if (r != SC_SUCCESS || !fid)
+	if (r != SC_SUCCESS)
 		return r;
+	if (!fid)
+		return SC_ERROR_INTERNAL;
 	if (fid->size < *len)
 		*len = fid->size;
 	r = sc_read_binary(card, 0, buf, *len, 0);
-	free(fid);
+	sc_file_free(fid);
 	if ((size_t)r < *len)
 		return SC_ERROR_INTERNAL;
 
@@ -318,15 +320,11 @@ static int sc_pkcs15_tccardos_init_func(sc_pkcs15_card_t *p15card)
 	if (r != SC_SUCCESS)
 		return r;
 	/* set card label */
-	if (p15card->tokeninfo->label != NULL)
-		free(p15card->tokeninfo->label);
-	p15card->tokeninfo->label = strdup(TC_CARDOS_LABEL);
+	set_string(&p15card->tokeninfo->label, TC_CARDOS_LABEL);
 	if (p15card->tokeninfo->label == NULL)
 		return SC_ERROR_OUT_OF_MEMORY;
 	/* set the manufacturer ID */
-	if (p15card->tokeninfo->manufacturer_id != NULL)
-		free(p15card->tokeninfo->manufacturer_id);
-	p15card->tokeninfo->manufacturer_id = strdup(MANU_ID);
+	set_string(&p15card->tokeninfo->manufacturer_id, MANU_ID);
 	if (p15card->tokeninfo->manufacturer_id == NULL)
 		return SC_ERROR_OUT_OF_MEMORY;
 	/* set the serial number */
@@ -334,7 +332,7 @@ static int sc_pkcs15_tccardos_init_func(sc_pkcs15_card_t *p15card)
 	if (r != SC_SUCCESS || iccsn.len < 5+8)
 		return SC_ERROR_INTERNAL;
 	sc_bin_to_hex(iccsn.value + 5, 8, hex_buf, sizeof(hex_buf), 0);
-	p15card->tokeninfo->serial_number = strdup(hex_buf);
+	set_string(&p15card->tokeninfo->serial_number, hex_buf);
 	if (p15card->tokeninfo->serial_number == NULL)
 		return SC_ERROR_OUT_OF_MEMORY;
 	/* select the application DF */
@@ -343,8 +341,7 @@ static int sc_pkcs15_tccardos_init_func(sc_pkcs15_card_t *p15card)
 	if (r != SC_SUCCESS || file == NULL)
 		return SC_ERROR_INTERNAL;
 	/* set the application DF */
-	if (p15card->file_app)
-		free(p15card->file_app);
+	sc_file_free(p15card->file_app);
 	p15card->file_app = file;
 
 	return SC_SUCCESS;

@@ -57,6 +57,7 @@ typedef unsigned __int32 uint32_t;
 #include "libopensc/pkcs15.h"
 #include "libopensc/asn1.h"
 #include "util.h"
+#include "pkcs11/pkcs11-display.h"
 
 static const char *app_name = "pkcs15-tool";
 
@@ -220,7 +221,7 @@ struct _access_rule_text {
 	{0, NULL},
 };
 
-static const char *key_types[] = { "", "RSA", "DSA", "GOSTR3410", "EC", "", "", "" };
+static const char *key_types[] = { "", "RSA", "DSA", "GOSTR3410", "EC", "EDDSA", "XEDDSA", "" };
 
 static void
 print_access_rules(const struct sc_pkcs15_accessrule *rules, int num)
@@ -607,6 +608,8 @@ static void print_prkey_info(const struct sc_pkcs15_object *obj)
 	struct sc_pkcs15_prkey_info *prkey = (struct sc_pkcs15_prkey_info *) obj->data;
 	unsigned char guid[40];
 	size_t guid_len;
+	int i;
+	int last_algo_refs = 0;
 
 	if (compact) {
 		printf("\t%-3s", key_types[7 & obj->type]);
@@ -634,6 +637,16 @@ static void print_prkey_info(const struct sc_pkcs15_object *obj)
 	printf("\n");
 	printf("\tAccess Flags   : [0x%02X]", prkey->access_flags);
 	print_key_access_flags(prkey->access_flags);
+	printf("\n");
+	printf("\tAlgo_refs      : ");
+	/* zero may be valid and don't know how many were read  print at least 1*/
+	for (i = 0; i< SC_MAX_SUPPORTED_ALGORITHMS; i++) {
+		if (prkey->algo_refs[i] != 0)
+			last_algo_refs = i;
+	}
+	for (i = 0; i< last_algo_refs + 1; i++) {
+		printf("%s%u", (i == 0) ? "" : ", ", prkey->algo_refs[i]);
+	}
 	printf("\n");
 
 	print_access_rules(obj->access_rules, SC_PKCS15_MAX_ACCESS_RULES);
@@ -726,7 +739,8 @@ static void print_pubkey_info(const struct sc_pkcs15_object *obj)
 	else if (pubkey->field_length)   {
 		printf("\tFieldLength    : %lu\n", (unsigned long)pubkey->field_length);
 	}
-	else if (obj->type == SC_PKCS15_TYPE_PUBKEY_EC && have_path)   {
+	else if ((obj->type == SC_PKCS15_TYPE_PUBKEY_EC || obj->type == SC_PKCS15_TYPE_PUBKEY_EDDSA)
+			&& have_path)   {
 		sc_pkcs15_pubkey_t *pkey = NULL;
 		if (!sc_pkcs15_read_pubkey(p15card, obj, &pkey))   {
 			printf("\tFieldLength    : %lu\n", (unsigned long)pkey->u.ec.params.field_length);
@@ -985,6 +999,39 @@ static int read_ssh_key(void)
 		return 1;
 	}
 
+	if (pubkey->algorithm == SC_ALGORITHM_EDDSA) {
+		// SSH supports only ed25519 key now
+
+		char alg[20];
+		/* Large enough to fit the following:
+		 * 2 x 4B item length headers
+		 * max 11B algorithm name, 32B key data */
+		unsigned char buf[64];
+		unsigned int len, n;
+
+		n = pubkey->u.eddsa.pubkey.len;
+		if (n != 32) {
+			fprintf(stderr, "Wrong public key length\n");
+			goto fail2;
+		}
+
+		buf[0] = 0;
+		buf[1] = 0;
+		buf[2] = 0;
+		len = snprintf((char *) buf+4, 20, "ssh-ed25519");
+		memcpy(alg, buf+4, 20);
+		buf[3] = len;
+		len += 4;
+
+		buf[len++] = 0;
+		buf[len++] = 0;
+		buf[len++] = 0;
+		buf[len++] = n & 0xff;
+		memcpy(buf + len, pubkey->u.eddsa.pubkey.value, n);
+		len += n;
+
+		print_ssh_key(outf, alg, obj, buf, len);
+	}
 	if (pubkey->algorithm == SC_ALGORITHM_EC) {
 		// support only for NIST
 		// 'ssh-keygen -t ecdsa' allow only field lengths 256/384/521
@@ -1645,6 +1692,21 @@ static int list_apps(FILE *fout)
 	return 0;
 }
 
+
+static void print_supported_algo_info_operations(unsigned int operation)
+
+{
+	size_t i;
+	const char *operations[] = {
+		"compute_checksum", "compute_signature", "verify_checksum", "verify_signature",
+		"encipher", "decipher", "hash", "generate/derive_key"
+	};
+	const size_t operations_count = NELEMENTS(operations);
+	for (i = 0; i < operations_count; i++)
+		if (operation & (1 << i))
+			printf(", %s", operations[i]);
+}
+
 static void list_info(void)
 {
 	const char *flags[] = {
@@ -1655,6 +1717,7 @@ static void list_info(void)
 	};
 	char *last_update = sc_pkcs15_get_lastupdate(p15card);
 	int i, count = 0;
+	int idx;
 
 	printf("PKCS#15 Card [%s]:\n", p15card->tokeninfo->label);
 	printf("\tVersion        : %d\n", p15card->tokeninfo->version);
@@ -1675,6 +1738,34 @@ static void list_info(void)
 			count++;
 		}
 	}
+	printf("\n");
+	for (i = 0; i < SC_MAX_SUPPORTED_ALGORITHMS; i++) {
+		struct sc_supported_algo_info * sa = &p15card->tokeninfo->supported_algos[i];
+
+		if (sa->reference == 0 && sa->mechanism == 0
+				&& sa->operations == 0 && sa->algo_ref == 0)
+					break;
+		printf("\t\t sc_supported_algo_info[%d]:\n", i);
+		printf("\t\t\t reference  : %u (0x%02x)\n", sa->reference, sa->reference);
+		printf("\t\t\t mechanism  : [0x%02x] %s\n", sa->mechanism, lookup_enum(MEC_T, sa->mechanism));
+		if (sc_valid_oid(&sa->parameters)) {
+			printf("\t\t\t parameters:  %i", sa->parameters.value[0]);
+			for (idx = 1; idx < SC_MAX_OBJECT_ID_OCTETS && sa->parameters.value[idx] != -1 ; idx++)
+				printf(".%i", sa->parameters.value[idx]);
+			printf("\n");
+		}
+		printf("\t\t\t operations : [0x%2.2x]",sa->operations);
+		print_supported_algo_info_operations(sa->operations);
+		printf("\n");
+		if (sc_valid_oid((const struct sc_object_id*)&sa->algo_id)) {
+			printf("\t\t\t algo_id    : %i", sa->algo_id.value[0]);
+			for (idx = 1; idx < SC_MAX_OBJECT_ID_OCTETS && sa->algo_id.value[idx] != -1 ; idx++)
+				printf(".%i", sa->algo_id.value[idx]);
+			printf("\n");
+		}
+		printf("\t\t\t algo_ref   : [0x%02x]\n",sa->algo_ref);
+	}
+
 	printf((compact) ? "\n" : "\n\n");
 }
 
@@ -1714,8 +1805,10 @@ static int unblock_pin(void)
 
 		if (pin_obj->auth_id.len)   {
 			r = sc_pkcs15_find_pin_by_auth_id(p15card, &pin_obj->auth_id, &puk_obj);
-			if (r)
+			if (r < 0)   {
+				fprintf(stderr, "Failed to find PUK object for PIN: %s\n", sc_strerror(r));
 				return 2;
+			}
 		}
 
 		if (puk_obj)   {

@@ -35,10 +35,8 @@
 
 #include <openssl/opensslv.h>
 #include "libopensc/sc-ossl-compat.h"
-#if OPENSSL_VERSION_NUMBER >= 0x10000000L
 #include <openssl/opensslconf.h>
 #include <openssl/crypto.h>
-#endif
 #include <openssl/conf.h>
 
 #include <openssl/evp.h>
@@ -117,8 +115,7 @@ static int initialize(sc_card_t *card, const char *so_pin, const char *user_pin,
 		return -1;
 	}
 
-	if (len == 0) {
-	} else if (len != 24) {
+	if (len != 24) {
 		fprintf(stderr, "The admin key must be a hexadecimal string of 48 characters\n");
 		return -1;
 	}
@@ -418,8 +415,14 @@ static int print_info(sc_card_t *card) {
 					keymaprecordnum = (keymapsize - 1) / sizeof(struct gids_keymap_record);
 				}
 				for (i = 0; i < cmaprecordnum; i++) {
-					printf("   container:                  %d\n", i);
+#ifdef _WIN32
 					wprintf(L"      guid:                    %ls\n", cmaprecords[i].wszGuid);
+#else
+					/* avoid converting Windows' WCHAR to Unix' wchar_t by simply dumping the content */
+					util_hex_dump(stdout,
+							(unsigned char *) cmaprecords[i].wszGuid,
+							sizeof cmaprecords[i].wszGuid, "");
+#endif
 					printf("      bFlags:                  ");
 					if (cmaprecords[i].bFlags & CONTAINER_MAP_VALID_CONTAINER) {
 						printf("Valid container");

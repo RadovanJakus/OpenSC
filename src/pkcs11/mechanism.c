@@ -504,9 +504,12 @@ sc_pkcs11_signature_size(sc_pkcs11_operation_t *operation, CK_ULONG_PTR pLength)
 					*pLength = (*pLength + 7) / 8;
 				break;
 			case CKK_EC:
+			case CKK_EC_EDWARDS:
+			case CKK_EC_MONTGOMERY:
 				/* TODO: -DEE we should use something other then CKA_MODULUS_BITS... */
 				rv = key->ops->get_attribute(operation->session, key, &attr);
-				*pLength = ((*pLength + 7)/8) * 2 ; /* 2*nLen in bytes */
+				if (rv == CKR_OK)
+					*pLength = ((*pLength + 7)/8) * 2 ; /* 2*nLen in bytes */
 				break;
 			case CKK_GOSTR3410:
 				rv = key->ops->get_attribute(operation->session, key, &attr);
@@ -566,6 +569,12 @@ sc_pkcs11_verif_init(struct sc_pkcs11_session *session, CK_MECHANISM_PTR pMechan
 		return rv;
 
 	memcpy(&operation->mechanism, pMechanism, sizeof(CK_MECHANISM));
+	if (pMechanism->pParameter) {
+		memcpy(&operation->mechanism_params, pMechanism->pParameter,
+			pMechanism->ulParameterLen);
+		operation->mechanism.pParameter = &operation->mechanism_params;
+	}
+
 	rv = mt->verif_init(operation, key);
 
 	if (rv != CKR_OK)
@@ -798,7 +807,21 @@ sc_pkcs11_decr_init(struct sc_pkcs11_session *session,
 		return rv;
 
 	memcpy(&operation->mechanism, pMechanism, sizeof(CK_MECHANISM));
+	if (pMechanism->pParameter) {
+		memcpy(&operation->mechanism_params, pMechanism->pParameter,
+		       pMechanism->ulParameterLen);
+		operation->mechanism.pParameter = &operation->mechanism_params;
+	}
 	rv = mt->decrypt_init(operation, key);
+
+	/* Validate the mechanism parameters */
+	if (key->ops->init_params) {
+		rv = key->ops->init_params(operation->session, &operation->mechanism);
+		if (rv != CKR_OK) {
+			/* Probably bad arguments */
+			LOG_FUNC_RETURN(context, (int) rv);
+		}
+	}
 
 	if (rv != CKR_OK)
 		session_stop_operation(session, SC_PKCS11_OPERATION_DECRYPT);

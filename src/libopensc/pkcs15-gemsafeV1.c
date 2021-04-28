@@ -173,6 +173,7 @@ static int gemsafe_get_cert_len(sc_card_t *card)
 	r = sc_select_file(card, &path, &file);
 	if (r != SC_SUCCESS || !file)
 		return SC_ERROR_INTERNAL;
+	sc_file_free(file);
 
 	/* Initial read */
 	r = sc_read_binary(card, 0, ibuf, GEMSAFE_READ_QUANTUM, 0);
@@ -304,14 +305,12 @@ static int sc_pkcs15emu_gemsafeV1_init( sc_pkcs15_card_t *p15card)
 
 	sc_log(p15card->card->ctx, "Setting pkcs15 parameters");
 
-	if (p15card->tokeninfo->label)
-		free(p15card->tokeninfo->label);
+	free(p15card->tokeninfo->label);
 	p15card->tokeninfo->label = strdup(APPLET_NAME);
 	if (!p15card->tokeninfo->label)
 		return SC_ERROR_INTERNAL;
 
-	if (p15card->tokeninfo->serial_number)
-		free(p15card->tokeninfo->serial_number);
+	free(p15card->tokeninfo->serial_number);
 	p15card->tokeninfo->serial_number = strdup(DRIVER_SERIAL_NUMBER);
 	if (!p15card->tokeninfo->serial_number)
 		return SC_ERROR_INTERNAL;
@@ -334,8 +333,7 @@ static int sc_pkcs15emu_gemsafeV1_init( sc_pkcs15_card_t *p15card)
 		return SC_ERROR_INTERNAL;
 
 	/* the manufacturer ID, in this case GemPlus */
-	if (p15card->tokeninfo->manufacturer_id)
-		free(p15card->tokeninfo->manufacturer_id);
+	free(p15card->tokeninfo->manufacturer_id);
 	p15card->tokeninfo->manufacturer_id = strdup(MANU_ID);
 	if (!p15card->tokeninfo->manufacturer_id)
 		return SC_ERROR_INTERNAL;
@@ -425,8 +423,7 @@ static int sc_pkcs15emu_gemsafeV1_init( sc_pkcs15_card_t *p15card)
 	if (r != SC_SUCCESS || !file)
 		return SC_ERROR_INTERNAL;
 	/* set the application DF */
-	if (p15card->file_app)
-		free(p15card->file_app);
+	sc_file_free(p15card->file_app);
 	p15card->file_app = file;
 
 	return SC_SUCCESS;

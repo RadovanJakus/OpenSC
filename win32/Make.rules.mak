@@ -17,6 +17,12 @@ WIXVSVER = VS2013
 !IF "$(VISUALSTUDIOVERSION)" == "14.0"
 WIXVSVER = VS2015
 !ENDIF
+!IF "$(VISUALSTUDIOVERSION)" == "15.0"
+WIXVSVER = VS2017
+!ENDIF
+!IF "$(VISUALSTUDIOVERSION)" == "16.0"
+WIXVSVER = VS2019
+!ENDIF
 WIX_INCL_DIR = "/I$(WIX)\SDK\$(WIXVSVER)\inc"
 WIX_LIBS = "$(WIX)\SDK\$(WIXVSVER)\lib\$(PLATFORM)\dutil.lib" "$(WIX)\SDK\$(WIXVSVER)\lib\$(PLATFORM)\wcautil.lib"
 
@@ -36,10 +42,12 @@ SM_DEF = /DENABLE_SM
 # - set the OPENSSL_LIB below to your openssl lib file
 #OPENSSL_DEF= /DENABLE_OPENSSL
 !IF "$(OPENSSL_DEF)" == "/DENABLE_OPENSSL"
+!IF "$(OPENSSL_DIR)" == ""
 !IF "$(PLATFORM)" == "x86"
 OPENSSL_DIR = C:\OpenSSL-Win32
 !ELSE
 OPENSSL_DIR = C:\OpenSSL-Win64
+!ENDIF
 !ENDIF
 OPENSSL_INCL_DIR = /I$(OPENSSL_DIR)\include
 
@@ -49,26 +57,26 @@ OPENSSL_STATIC_DIR = static
 !IF "$(DEBUG_DEF)" == "/DDEBUG"
 !IF "$(PLATFORM)" == "x86"
 # OpenSSL 1.0.2
-OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libeay32MTd.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
+#OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libeay32MTd.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
 # OpenSSL 1.1.0
-#OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libcrypto32MTd.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
+OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libcrypto32MTd.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
 !ELSE
 # OpenSSL 1.0.2
-OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libeay32MTd.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
+#OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libeay32MTd.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
 # OpenSSL 1.1.0
-#OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libcrypto64MTd.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
+OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libcrypto64MTd.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
 !ENDIF
 !ELSE
 !IF "$(PLATFORM)" == "x86"
 # OpenSSL 1.0.2
-OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libeay32MT.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
+#OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libeay32MT.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
 # OpenSSL 1.1.0
-#OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libcrypto32MT.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
+OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libcrypto32MT.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
 !ELSE
 # OpenSSL 1.0.2
-OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libeay32MT.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
+#OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libeay32MT.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
 # OpenSSL 1.1.0
-#OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libcrypto64MT.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
+OPENSSL_LIB = $(OPENSSL_DIR)\lib\VC\$(OPENSSL_STATIC_DIR)\libcrypto64MT.lib user32.lib advapi32.lib crypt32.lib ws2_32.lib
 !ENDIF
 !ENDIF
 
@@ -124,8 +132,10 @@ CANDLEFLAGS = -dOpenPACE="$(OPENPACE_DIR)" $(CANDLEFLAGS)
 
 # Used for MiniDriver
 CNGSDK_INCL_DIR = "/IC:\Program Files (x86)\Microsoft CNG Development Kit\Include"
+CPDK_INCL_DIR   = "/IC:\Program Files (x86)\Windows Kits\10\Cryptographic Provider Development Kit\Include"
 !IF "$(PROCESSOR_ARCHITECTURE)" == "x86" && "$(PROCESSOR_ARCHITEW6432)" == ""
 CNGSDK_INCL_DIR = "/IC:\Program Files\Microsoft CNG Development Kit\Include"
+CPDK_INCL_DIR   = "/IC:\Program Files\Windows Kits\10\Cryptographic Provider Development Kit\Include"
 !ENDIF
 # Mandatory path to 'ISO C9x compliant stdint.h and inttypes.h for Microsoft Visual Studio'
 # http://msinttypes.googlecode.com/files/msinttypes-r26.zip
@@ -135,7 +145,7 @@ CNGSDK_INCL_DIR = "/IC:\Program Files\Microsoft CNG Development Kit\Include"
 #  O1 - minimal code size
 CODE_OPTIMIZATION = /O1
 
-ALL_INCLUDES = /I$(TOPDIR)\win32 /I$(TOPDIR)\src $(OPENPACE_INCL_DIR) $(OPENSSL_INCL_DIR) $(OPENSSL_EXTRA_CFLAGS) $(ZLIB_INCL_DIR) $(LIBLTDL_INCL) $(INTTYPES_INCL_DIR) $(CNGSDK_INCL_DIR) $(WIX_INCL_DIR)
+ALL_INCLUDES = /I$(TOPDIR)\win32 /I$(TOPDIR)\src $(OPENPACE_INCL_DIR) $(OPENSSL_INCL_DIR) $(OPENSSL_EXTRA_CFLAGS) $(ZLIB_INCL_DIR) $(LIBLTDL_INCL) $(INTTYPES_INCL_DIR) $(CPDK_INCL_DIR) $(CNGSDK_INCL_DIR) $(WIX_INCL_DIR)
 
 !IF "$(DEBUG_DEF)" == "/DDEBUG"
 LINKDEBUGFLAGS = /NODEFAULTLIB:LIBCMT /DEBUG

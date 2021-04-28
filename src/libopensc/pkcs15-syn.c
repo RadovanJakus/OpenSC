@@ -43,22 +43,24 @@ struct sc_pkcs15_emulator_handler builtin_emulators[] = {
 	{ "itacns",	sc_pkcs15emu_itacns_init_ex	},
 	{ "PIV-II",     sc_pkcs15emu_piv_init_ex	},
 	{ "cac",        sc_pkcs15emu_cac_init_ex	},
+	{ "idprime",    sc_pkcs15emu_idprime_init_ex	},
 	{ "gemsafeGPK",	sc_pkcs15emu_gemsafeGPK_init_ex	},
 	{ "gemsafeV1",	sc_pkcs15emu_gemsafeV1_init_ex	},
 	{ "actalis",	sc_pkcs15emu_actalis_init_ex	},
 	{ "atrust-acos",sc_pkcs15emu_atrust_acos_init_ex},
 	{ "tccardos",	sc_pkcs15emu_tccardos_init_ex	},
-	{ "entersafe",  sc_pkcs15emu_entersafe_init_ex  },
+	{ "entersafe",  sc_pkcs15emu_entersafe_init_ex	},
 	{ "pteid",	sc_pkcs15emu_pteid_init_ex	},
 	{ "oberthur",   sc_pkcs15emu_oberthur_init_ex	},
 	{ "sc-hsm",	sc_pkcs15emu_sc_hsm_init_ex	},
-	{ "dnie",       sc_pkcs15emu_dnie_init_ex   },
-	{ "gids",       sc_pkcs15emu_gids_init_ex   },
-	{ "iasecc",	sc_pkcs15emu_iasecc_init_ex   },
-	{ "jpki",	sc_pkcs15emu_jpki_init_ex },
+	{ "dnie",       sc_pkcs15emu_dnie_init_ex	},
+	{ "gids",       sc_pkcs15emu_gids_init_ex	},
+	{ "iasecc",	sc_pkcs15emu_iasecc_init_ex	},
+	{ "jpki",	sc_pkcs15emu_jpki_init_ex	},
 	{ "coolkey",    sc_pkcs15emu_coolkey_init_ex	},
-	{ "din66291",    sc_pkcs15emu_din_66291_init_ex	},
-	{ "esteid2018",    sc_pkcs15emu_esteid2018_init_ex	},
+	{ "din66291",   sc_pkcs15emu_din_66291_init_ex	},
+	{ "esteid2018", sc_pkcs15emu_esteid2018_init_ex	},
+	{ "cardos",     sc_pkcs15emu_cardos_init_ex	},
 
 	{ NULL, NULL }
 };
@@ -89,11 +91,15 @@ int sc_pkcs15_is_emulation_only(sc_card_t *card)
 		case SC_CARD_TYPE_DNIE_USER:
 		case SC_CARD_TYPE_DNIE_TERMINATED:
 		case SC_CARD_TYPE_IASECC_GEMALTO:
+		case SC_CARD_TYPE_IASECC_CPX:
+		case SC_CARD_TYPE_IASECC_CPXCL:
 		case SC_CARD_TYPE_PIV_II_GENERIC:
 		case SC_CARD_TYPE_PIV_II_HIST:
 		case SC_CARD_TYPE_PIV_II_NEO:
 		case SC_CARD_TYPE_PIV_II_YUBIKEY4:
 		case SC_CARD_TYPE_ESTEID_2018:
+		case SC_CARD_TYPE_CARDOS_V5_0:
+		case SC_CARD_TYPE_CARDOS_V5_3:
 
 			return 1;
 		default:
@@ -360,6 +366,7 @@ int sc_pkcs15emu_add_ec_prkey(sc_pkcs15_card_t *p15card,
 
 	return sc_pkcs15emu_object_add(p15card, SC_PKCS15_TYPE_PRKEY_EC, obj, &key);
 }
+
 int sc_pkcs15emu_add_ec_pubkey(sc_pkcs15_card_t *p15card,
 	const sc_pkcs15_object_t *obj, const sc_pkcs15_pubkey_info_t *in_key)
 {
@@ -369,6 +376,56 @@ int sc_pkcs15emu_add_ec_pubkey(sc_pkcs15_card_t *p15card,
 		key.access_flags = SC_PKCS15_PRKEY_ACCESS_EXTRACTABLE;
 
 	return sc_pkcs15emu_object_add(p15card, SC_PKCS15_TYPE_PUBKEY_EC, obj, &key);
+}
+
+int sc_pkcs15emu_add_eddsa_prkey(sc_pkcs15_card_t *p15card,
+	const sc_pkcs15_object_t *obj, const sc_pkcs15_prkey_info_t *in_key)
+{
+	sc_pkcs15_prkey_info_t key = *in_key;
+
+	if (key.access_flags == 0)
+		key.access_flags = SC_PKCS15_PRKEY_ACCESS_SENSITIVE
+				| SC_PKCS15_PRKEY_ACCESS_ALWAYSSENSITIVE
+				| SC_PKCS15_PRKEY_ACCESS_NEVEREXTRACTABLE
+				| SC_PKCS15_PRKEY_ACCESS_LOCAL;
+
+	return sc_pkcs15emu_object_add(p15card, SC_PKCS15_TYPE_PRKEY_EDDSA, obj, &key);
+}
+
+int sc_pkcs15emu_add_eddsa_pubkey(sc_pkcs15_card_t *p15card,
+	const sc_pkcs15_object_t *obj, const sc_pkcs15_pubkey_info_t *in_key)
+{
+	sc_pkcs15_pubkey_info_t key = *in_key;
+
+	if (key.access_flags == 0)
+		key.access_flags = SC_PKCS15_PRKEY_ACCESS_EXTRACTABLE;
+
+	return sc_pkcs15emu_object_add(p15card, SC_PKCS15_TYPE_PUBKEY_EDDSA, obj, &key);
+}
+
+int sc_pkcs15emu_add_xeddsa_prkey(sc_pkcs15_card_t *p15card,
+	const sc_pkcs15_object_t *obj, const sc_pkcs15_prkey_info_t *in_key)
+{
+	sc_pkcs15_prkey_info_t key = *in_key;
+
+	if (key.access_flags == 0)
+		key.access_flags = SC_PKCS15_PRKEY_ACCESS_SENSITIVE
+				| SC_PKCS15_PRKEY_ACCESS_ALWAYSSENSITIVE
+				| SC_PKCS15_PRKEY_ACCESS_NEVEREXTRACTABLE
+				| SC_PKCS15_PRKEY_ACCESS_LOCAL;
+
+	return sc_pkcs15emu_object_add(p15card, SC_PKCS15_TYPE_PRKEY_XEDDSA, obj, &key);
+}
+
+int sc_pkcs15emu_add_xeddsa_pubkey(sc_pkcs15_card_t *p15card,
+	const sc_pkcs15_object_t *obj, const sc_pkcs15_pubkey_info_t *in_key)
+{
+	sc_pkcs15_pubkey_info_t key = *in_key;
+
+	if (key.access_flags == 0)
+		key.access_flags = SC_PKCS15_PRKEY_ACCESS_EXTRACTABLE;
+
+	return sc_pkcs15emu_object_add(p15card, SC_PKCS15_TYPE_PUBKEY_XEDDSA, obj, &key);
 }
 
 int sc_pkcs15emu_add_x509_cert(sc_pkcs15_card_t *p15card,
@@ -390,11 +447,15 @@ int sc_pkcs15emu_object_add(sc_pkcs15_card_t *p15card, unsigned int type,
 	unsigned int	df_type;
 	size_t		data_len;
 
+	SC_FUNC_CALLED(p15card->card->ctx, SC_LOG_DEBUG_VERBOSE);
+
 	obj = calloc(1, sizeof(*obj));
-	if (!obj)
-		return SC_ERROR_OUT_OF_MEMORY;
+	if (!obj) {
+		LOG_FUNC_RETURN(p15card->card->ctx, SC_ERROR_OUT_OF_MEMORY);
+	}
+
 	memcpy(obj, in_obj, sizeof(*obj));
-	obj->type  = type;
+	obj->type = type;
 
 	switch (type & SC_PKCS15_TYPE_CLASS_MASK) {
 	case SC_PKCS15_TYPE_AUTH:
@@ -420,19 +481,19 @@ int sc_pkcs15emu_object_add(sc_pkcs15_card_t *p15card, unsigned int type,
 	default:
 		sc_log(p15card->card->ctx, "Unknown PKCS15 object type %d", type);
 		free(obj);
-		return SC_ERROR_INVALID_ARGUMENTS;
+		LOG_FUNC_RETURN(p15card->card->ctx, SC_ERROR_INVALID_ARGUMENTS);
 	}
 
 	obj->data = calloc(1, data_len);
 	if (obj->data == NULL) {
 		free(obj);
-		return SC_ERROR_OUT_OF_MEMORY;
+		LOG_FUNC_RETURN(p15card->card->ctx, SC_ERROR_OUT_OF_MEMORY);
 	}
 	memcpy(obj->data, data, data_len);
 
 	obj->df = sc_pkcs15emu_get_df(p15card, df_type);
 	sc_pkcs15_add_object(p15card, obj);
 
-	return SC_SUCCESS;
+	LOG_FUNC_RETURN(p15card->card->ctx, SC_SUCCESS);
 }
 

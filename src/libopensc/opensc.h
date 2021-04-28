@@ -78,6 +78,8 @@ extern "C" {
 #define SC_ALGORITHM_DSA		1
 #define SC_ALGORITHM_EC			2
 #define SC_ALGORITHM_GOSTR3410		3
+#define SC_ALGORITHM_EDDSA		4
+#define SC_ALGORITHM_XEDDSA		5
 
 /* Symmetric algorithms */
 #define SC_ALGORITHM_DES		64
@@ -107,12 +109,13 @@ extern "C" {
  * must support at least one of them, and exactly one of them must be selected
  * for a given operation. */
 #define SC_ALGORITHM_RSA_RAW		0x00000001
-#define SC_ALGORITHM_RSA_PADS		0x0000001F
+#define SC_ALGORITHM_RSA_PADS		0x0000003F
 #define SC_ALGORITHM_RSA_PAD_NONE	0x00000001
 #define SC_ALGORITHM_RSA_PAD_PKCS1	0x00000002 /* PKCS#1 v1.5 padding */
 #define SC_ALGORITHM_RSA_PAD_ANSI	0x00000004
 #define SC_ALGORITHM_RSA_PAD_ISO9796	0x00000008
 #define SC_ALGORITHM_RSA_PAD_PSS	0x00000010 /* PKCS#1 v2.0 PSS */
+#define SC_ALGORITHM_RSA_PAD_OAEP	0x00000020 /* PKCS#1 v2.0 OAEP */
 
 /* If the card is willing to produce a cryptogram with the following
  * hash values, set these flags accordingly.  The interpretation of the hash
@@ -188,6 +191,10 @@ extern "C" {
 							SC_ALGORITHM_ECDSA_HASH_SHA384 | \
 							SC_ALGORITHM_ECDSA_HASH_SHA512)
 
+/* EdDSA algorithms */
+#define SC_ALGORITHM_EDDSA_RAW		0x00400000
+#define SC_ALGORITHM_XEDDSA_RAW		0x00800000
+
 /* define mask of all algorithms that can do raw */
 #define SC_ALGORITHM_RAW_MASK (SC_ALGORITHM_RSA_RAW | \
                                SC_ALGORITHM_GOSTR3410_RAW | \
@@ -212,17 +219,17 @@ extern "C" {
 /* Event masks for sc_wait_for_event() */
 #define SC_EVENT_CARD_INSERTED		0x0001
 #define SC_EVENT_CARD_REMOVED		0x0002
-#define SC_EVENT_CARD_EVENTS		SC_EVENT_CARD_INSERTED|SC_EVENT_CARD_REMOVED
+#define SC_EVENT_CARD_EVENTS		(SC_EVENT_CARD_INSERTED|SC_EVENT_CARD_REMOVED)
 #define SC_EVENT_READER_ATTACHED	0x0004
 #define SC_EVENT_READER_DETACHED	0x0008
-#define SC_EVENT_READER_EVENTS		SC_EVENT_READER_ATTACHED|SC_EVENT_READER_DETACHED
+#define SC_EVENT_READER_EVENTS		(SC_EVENT_READER_ATTACHED|SC_EVENT_READER_DETACHED)
 
 #define MAX_FILE_SIZE 65535
 
 struct sc_supported_algo_info {
 	unsigned int reference;
 	unsigned int mechanism;
-	struct sc_object_id *parameters; /* OID for ECC, NULL for RSA */
+	struct sc_object_id parameters; /* OID for ECC */
 	unsigned int operations;
 	struct sc_object_id algo_id;
 	unsigned int algo_ref;
@@ -428,37 +435,45 @@ typedef struct sc_reader {
 #define SC_PIN_STATE_LOGGED_OUT 0
 #define SC_PIN_STATE_LOGGED_IN  1
 
+/* A card driver receives the sc_pin_cmd_data and sc_pin_cmd_pin structures filled in by the
+ * caller, with the exception of the fields returned by the driver for SC_PIN_CMD_GET_INFO.
+ * It may use and update any of the fields before passing the structure to the ISO 7816 layer for
+ * processing.
+ */
 struct sc_pin_cmd_pin {
 	const char *prompt;	/* Prompt to display */
 
-	const unsigned char *data;		/* PIN, if given by the application */
-	int len;		/* set to -1 to get pin from pin pad */
+	const unsigned char *data; /* PIN, set to NULL when using pin pad */
+	int len;		/* set to 0 when using pin pad */
 
 	size_t min_length;	/* min length of PIN */
 	size_t max_length;	/* max length of PIN */
-	size_t stored_length;	/* stored length of PIN */
 
 	unsigned int encoding;	/* ASCII-numeric, BCD, etc */
 
-	size_t pad_length;	/* filled in by the card driver */
+	size_t pad_length;	/* PIN padding options, used with SC_PIN_CMD_NEED_PADDING */
 	unsigned char pad_char;
 
-	size_t offset;		/* PIN offset in the APDU */
-	size_t length_offset;	/* Effective PIN length offset in the APDU */
+	size_t offset;		/* PIN offset in the APDU when using pin pad */
 
-	int max_tries;	/* Used for signaling back from SC_PIN_CMD_GET_INFO */
-	int tries_left;	/* Used for signaling back from SC_PIN_CMD_GET_INFO */
-	int logged_in;	/* Used for signaling back from SC_PIN_CMD_GET_INFO */
-
-	struct sc_acl_entry acls[SC_MAX_SDO_ACLS];
+	int max_tries;		/* Used for signaling back from SC_PIN_CMD_GET_INFO */
+	int tries_left;		/* Used for signaling back from SC_PIN_CMD_GET_INFO */
+	int logged_in;		/* Used for signaling back from SC_PIN_CMD_GET_INFO */
 };
 
+/* A NULL in apdu means that the APDU is prepared by the ISO 7816 layer, which also handles PIN
+ * padding and setting offset fields for the PINs (for PIN-pad use). A non-NULL in APDU means that
+ * the card driver has prepared the APDU (including padding) and set the PIN offset fields.
+ *
+ * Note that flags apply to both PINs for multi-PIN operations.
+ */
 struct sc_pin_cmd_data {
 	unsigned int cmd;
 	unsigned int flags;
 
 	unsigned int pin_type;		/* usually SC_AC_CHV */
 	int pin_reference;
+	int puk_reference;		/* non-zero means that reference is available */
 
 	struct sc_pin_cmd_pin pin1, pin2;
 
@@ -544,10 +559,6 @@ struct sc_reader_operations {
  * instead of relying on the ACL info in the profile files. */
 #define SC_CARD_CAP_USE_FCI_AC		0x00000010
 
-/* D-TRUST CardOS cards special flags */
-#define SC_CARD_CAP_ONLY_RAW_HASH		0x00000040
-#define SC_CARD_CAP_ONLY_RAW_HASH_STRIPPED	0x00000080
-
 /* Card (or card driver) supports an protected authentication mechanism */
 #define SC_CARD_CAP_PROTECTED_AUTHENTICATION_PATH	0x00000100
 
@@ -580,7 +591,6 @@ typedef struct sc_card {
 
 	struct sc_app_info *app[SC_MAX_CARD_APPS];
 	int app_count;
-	struct sc_file *ef_dir;
 
 	struct sc_ef_atr *ef_atr;
 
@@ -609,28 +619,90 @@ typedef struct sc_card {
 } sc_card_t;
 
 struct sc_card_operations {
-	/* Called in sc_connect_card().  Must return 1, if the current
+	/** @brief Match a card with the given card driver.
+	 *
+	 * Called in sc_connect_card().  Must return 1, if the current
 	 * card can be handled with this driver, or 0 otherwise.  ATR
 	 * field of the sc_card struct is filled in before calling
-	 * this function. */
+	 * this function. It is recommended not to modify `card` during this call.
+	 * */
 	int (*match_card)(struct sc_card *card);
 
-	/* Called when ATR of the inserted card matches an entry in ATR
+	/** @brief Initialize a card.
+	 *
+	 * Called when ATR of the inserted card matches an entry in ATR
 	 * table.  May return SC_ERROR_INVALID_CARD to indicate that
-	 * the card cannot be handled with this driver. */
+	 * the card cannot be handled with this driver. drv_data may be used to
+	 * store card driver's (allocated) private data. */
 	int (*init)(struct sc_card *card);
-	/* Called when the card object is being freed.  finish() has to
+	/** @brief Deinitialize a card.
+	 *
+	 * Called when the `card` object is being freed.  finish() has to
 	 * deallocate all possible private data. */
 	int (*finish)(struct sc_card *card);
 
 	/* ISO 7816-4 functions */
 
+	/**
+	 * @brief Read data from a binary EF with a single command
+	 *
+	 * Implementation of this call back is optional and may be NULL.
+	 *
+	 * @param  card   struct sc_card object on which to issue the command
+	 * @param  idx    index within the file with the data to read
+	 * @param  buf    buffer to the read data
+	 * @param  count  number of bytes to read
+	 * @param  flags  flags for the READ BINARY command (currently not used)
+	 * @return number of bytes read or an error code
+	 *
+	 * @see sc_read_binary()
+	 */
 	int (*read_binary)(struct sc_card *card, unsigned int idx,
 			u8 * buf, size_t count, unsigned long flags);
+	/**
+	 * @brief Write data to a binary EF with a single command
+	 *
+	 * Implementation of this call back is optional and may be NULL.
+	 *
+	 * @param  card   struct sc_card object on which to issue the command
+	 * @param  idx    index within the file for the data to be written
+	 * @param  buf    buffer with the data
+	 * @param  count  number of bytes to write
+	 * @param  flags  flags for the WRITE BINARY command (currently not used)
+	 * @return number of bytes written or an error code
+	 *
+	 * @see sc_write_binary()
+	 */
 	int (*write_binary)(struct sc_card *card, unsigned int idx,
 				const u8 * buf, size_t count, unsigned long flags);
+	/** @brief Updates the content of a binary EF
+	 *
+	 * Implementation of this call back is optional and may be NULL.
+	 *
+	 * @param  card   struct sc_card object on which to issue the command
+	 * @param  idx    index within the file for the data to be updated
+	 * @param  buf    buffer with the new data
+	 * @param  count  number of bytes to update
+	 * @param  flags  flags for the UPDATE BINARY command (currently not used)
+	 * @return number of bytes written or an error code
+	 *
+	 * @see sc_update_binary()
+	 */
 	int (*update_binary)(struct sc_card *card, unsigned int idx,
 			     const u8 * buf, size_t count, unsigned long flags);
+	/**
+	 * @brief Sets (part of) the content of an EF to its logical erased state
+	 *
+	 * Implementation of this call back is optional and may be NULL.
+	 *
+	 * @param  card   struct sc_card object on which to issue the command
+	 * @param  idx    index within the file for the data to be erased
+	 * @param  count  number of bytes to erase
+	 * @param  flags  flags for the ERASE BINARY command (currently not used)
+	 * @return number of bytes erased or an error code
+	 *
+	 * @see sc_erase_binary()
+	 */
 	int (*erase_binary)(struct sc_card *card, unsigned int idx,
 			    size_t count, unsigned long flags);
 
@@ -849,7 +921,7 @@ int sc_bytes2apdu(sc_context_t *ctx, const u8 *buf, size_t len, sc_apdu_t *apdu)
  *  @param  apdu    APDU to be encoded as an octet string
  *  @param  proto   protocol version to be used
  *  @param  out     output buffer of size outlen.
- *  @param  outlen  size of hte output buffer
+ *  @param  outlen  size of the output buffer
  *  @return SC_SUCCESS on success and an error code otherwise
  */
 int sc_apdu2bytes(sc_context_t *ctx, const sc_apdu_t *apdu,
@@ -1028,18 +1100,25 @@ int sc_disconnect_card(struct sc_card *card);
 int sc_detect_card_presence(sc_reader_t *reader);
 
 /**
- * Waits for an event on readers. Note: only the event is detected,
- * there is no update of any card or other info.
- * NOTE: Only PC/SC backend implements this.
- * @param ctx  pointer to a Context structure
- * @param event_mask The types of events to wait for; this should
- *   be ORed from one of the following
- *   	SC_EVENT_CARD_REMOVED
- *   	SC_EVENT_CARD_INSERTED
- *	SC_EVENT_READER_ATTACHED
- * @param event_reader (OUT) the reader on which the event was detected, or NULL if new reader
+ * Waits for an event on readers.
+ *
+ * In case of a reader event (attached/detached), the list of reader is
+ * adjusted accordingly. This means that a subsequent call to
+ * `sc_ctx_detect_readers()` is not needed.
+ *
+ * @note Only PC/SC backend implements this. An infinite timeout on macOS does
+ * not detect reader events (use a limited timeout instead if needed).
+ *
+ * @param ctx (IN) pointer to a Context structure
+ * @param event_mask (IN) The types of events to wait for; this should
+ *   be ORed from one of the following:
+ *   - SC_EVENT_CARD_REMOVED
+ *   - SC_EVENT_CARD_INSERTED
+ *	 - SC_EVENT_READER_ATTACHED
+ *	 - SC_EVENT_READER_DETACHED
+ * @param event_reader (OUT) the reader on which the event was detected
  * @param event (OUT) the events that occurred. This is also ORed
- *   from the SC_EVENT_CARD_* constants listed above.
+ *   from the constants listed above.
  * @param timeout Amount of millisecs to wait; -1 means forever
  * @retval < 0 if an error occurred
  * @retval = 0 if a an event happened
@@ -1127,7 +1206,10 @@ int sc_select_file(struct sc_card *card, const sc_path_t *path,
  */
 int sc_list_files(struct sc_card *card, u8 *buf, size_t buflen);
 /**
- * Read data from a binary EF
+ * @brief Read data from a binary EF
+ *
+ * If `count` exceeds the card's transmission limits, multiple commands are issued.
+ *
  * @param  card   struct sc_card object on which to issue the command
  * @param  idx    index within the file with the data to read
  * @param  buf    buffer to the read data
@@ -1138,7 +1220,10 @@ int sc_list_files(struct sc_card *card, u8 *buf, size_t buflen);
 int sc_read_binary(struct sc_card *card, unsigned int idx, u8 * buf,
 		   size_t count, unsigned long flags);
 /**
- * Write data to a binary EF
+ * @brief Write data to a binary EF
+ *
+ * If `count` exceeds the card's transmission limits, multiple commands are issued.
+ *
  * @param  card   struct sc_card object on which to issue the command
  * @param  idx    index within the file for the data to be written
  * @param  buf    buffer with the data
@@ -1149,7 +1234,10 @@ int sc_read_binary(struct sc_card *card, unsigned int idx, u8 * buf,
 int sc_write_binary(struct sc_card *card, unsigned int idx, const u8 * buf,
 		    size_t count, unsigned long flags);
 /**
- * Updates the content of a binary EF
+ * @brief Updates the content of a binary EF
+ *
+ * If `count` exceeds the card's transmission limits, multiple commands are issued.
+ *
  * @param  card   struct sc_card object on which to issue the command
  * @param  idx    index within the file for the data to be updated
  * @param  buf    buffer with the new data
@@ -1161,12 +1249,12 @@ int sc_update_binary(struct sc_card *card, unsigned int idx, const u8 * buf,
 		     size_t count, unsigned long flags);
 
 /**
- * Sets (part of) the content fo an EF to its logical erased state
+ * Sets (part of) the content of an EF to its logical erased state
  * @param  card   struct sc_card object on which to issue the command
  * @param  idx    index within the file for the data to be erased
  * @param  count  number of bytes to erase
  * @param  flags  flags for the ERASE BINARY command (currently not used)
- * @return number of bytes written or an error code
+ * @return number of bytes erased or an error code
  */
 int sc_erase_binary(struct sc_card *card, unsigned int idx,
 		    size_t count, unsigned long flags);
@@ -1473,6 +1561,10 @@ struct sc_algorithm_info * sc_card_find_rsa_alg(struct sc_card *card,
 		unsigned int key_length);
 struct sc_algorithm_info * sc_card_find_ec_alg(struct sc_card *card,
 		unsigned int field_length, struct sc_object_id *curve_oid);
+struct sc_algorithm_info * sc_card_find_eddsa_alg(struct sc_card *card,
+		unsigned int field_length, struct sc_object_id *curve_oid);
+struct sc_algorithm_info * sc_card_find_xeddsa_alg(struct sc_card *card,
+		unsigned int field_length, struct sc_object_id *curve_oid);
 struct sc_algorithm_info * sc_card_find_gostr3410_alg(struct sc_card *card,
 		unsigned int key_length);
 struct sc_algorithm_info * sc_card_find_alg(sc_card_t *card,
@@ -1581,6 +1673,28 @@ int iso7816_update_binary_sfid(sc_card_t *card, unsigned char sfid,
  * @note The appropriate directory must be selected before calling this function.
  * */
 int iso7816_logout(sc_card_t *card, unsigned char pin_reference);
+
+/*
+ * @brief Format PIN APDU for modifiction by card driver
+ *
+ * @param[in] card           card
+ * @param[in] apdu           apdu structure to update with PIN APDU
+ * @param[in] data           pin command data to set into the APDU
+ * @param[in] buf            buffer for APDU data field
+ * @param[in] buf_len        maximum buffer length
+ */
+int
+iso7816_build_pin_apdu(struct sc_card *card, struct sc_apdu *apdu,
+		struct sc_pin_cmd_data *data, u8 *buf, size_t buf_len);
+
+/**
+ * Free a buffer returned by OpenSC.
+ * Use this instead your C libraries free() to free memory allocated by OpenSC.
+ * For more details see <https://github.com/OpenSC/OpenSC/issues/2054> 
+ *
+ * @param[in] p the buffer
+ */
+void sc_free(void *p);
 
 #ifdef __cplusplus
 }

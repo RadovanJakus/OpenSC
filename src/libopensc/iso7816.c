@@ -142,7 +142,7 @@ iso7816_read_binary(struct sc_card *card, unsigned int idx, u8 *buf, size_t coun
 	struct sc_apdu apdu;
 	int r;
 
-	if (idx > 0x7fff) {
+	if (idx > 0x7FFF) {
 		sc_log(ctx, "invalid EF offset: 0x%X > 0x7FFF", idx);
 		return SC_ERROR_OFFSET_TOO_LARGE;
 	}
@@ -161,15 +161,6 @@ iso7816_read_binary(struct sc_card *card, unsigned int idx, u8 *buf, size_t coun
 		LOG_FUNC_RETURN(ctx, apdu.resplen);
 	LOG_TEST_RET(ctx, r, "Check SW error");
 
-	if (apdu.resplen < count)   {
-		r = iso7816_read_binary(card, idx + apdu.resplen, buf + apdu.resplen, count - apdu.resplen, flags);
-		/* Ignore all but 'corrupted data' errors */
-		if (r == SC_ERROR_CORRUPTED_DATA)
-			LOG_FUNC_RETURN(ctx, SC_ERROR_CORRUPTED_DATA);
-		else if (r > 0)
-			apdu.resplen += r;
-	}
-
 	LOG_FUNC_RETURN(ctx, apdu.resplen);
 }
 
@@ -181,14 +172,16 @@ iso7816_read_record(struct sc_card *card,
 	struct sc_apdu apdu;
 	int r;
 
-	sc_format_apdu(card, &apdu, SC_APDU_CASE_2, 0xB2, rec_nr, 0);
-	apdu.p2 = (flags & SC_RECORD_EF_ID_MASK) << 3;
-	if (flags & SC_RECORD_BY_REC_NR)
-		apdu.p2 |= 0x04;
+	if (rec_nr > 0xFF)
+		LOG_FUNC_RETURN(card->ctx, SC_ERROR_INVALID_ARGUMENTS);
 
+	sc_format_apdu(card, &apdu, SC_APDU_CASE_2, 0xB2, rec_nr, 0);
 	apdu.le = count;
 	apdu.resplen = count;
 	apdu.resp = buf;
+	apdu.p2 = (flags & SC_RECORD_EF_ID_MASK) << 3;
+	if (flags & SC_RECORD_BY_REC_NR)
+		apdu.p2 |= 0x04;
 
 	fixup_transceive_length(card, &apdu);
 	r = sc_transmit_apdu(card, &apdu);
@@ -208,13 +201,12 @@ iso7816_write_record(struct sc_card *card, unsigned int rec_nr,
 	int r;
 
 	sc_format_apdu(card, &apdu, SC_APDU_CASE_3, 0xD2, rec_nr, 0);
-	apdu.p2 = (flags & SC_RECORD_EF_ID_MASK) << 3;
-	if (flags & SC_RECORD_BY_REC_NR)
-		apdu.p2 |= 0x04;
-
 	apdu.lc = count;
 	apdu.datalen = count;
 	apdu.data = buf;
+	apdu.p2 = (flags & SC_RECORD_EF_ID_MASK) << 3;
+	if (flags & SC_RECORD_BY_REC_NR)
+		apdu.p2 |= 0x04;
 
 	fixup_transceive_length(card, &apdu);
 	r = sc_transmit_apdu(card, &apdu);
@@ -234,11 +226,10 @@ iso7816_append_record(struct sc_card *card,
 	int r;
 
 	sc_format_apdu(card, &apdu, SC_APDU_CASE_3, 0xE2, 0, 0);
-	apdu.p2 = (flags & SC_RECORD_EF_ID_MASK) << 3;
-
 	apdu.lc = count;
 	apdu.datalen = count;
 	apdu.data = buf;
+	apdu.p2 = (flags & SC_RECORD_EF_ID_MASK) << 3;
 
 	fixup_transceive_length(card, &apdu);
 	r = sc_transmit_apdu(card, &apdu);
@@ -258,13 +249,12 @@ iso7816_update_record(struct sc_card *card, unsigned int rec_nr,
 	int r;
 
 	sc_format_apdu(card, &apdu, SC_APDU_CASE_3, 0xDC, rec_nr, 0);
-	apdu.p2 = (flags & SC_RECORD_EF_ID_MASK) << 3;
-	if (flags & SC_RECORD_BY_REC_NR)
-		apdu.p2 |= 0x04;
-
 	apdu.lc = count;
 	apdu.datalen = count;
 	apdu.data = buf;
+	apdu.p2 = (flags & SC_RECORD_EF_ID_MASK) << 3;
+	if (flags & SC_RECORD_BY_REC_NR)
+		apdu.p2 |= 0x04;
 
 	fixup_transceive_length(card, &apdu);
 	r = sc_transmit_apdu(card, &apdu);
@@ -341,6 +331,8 @@ iso7816_process_fci(struct sc_card *card, struct sc_file *file,
 	size_t length;
 	int size;
 
+	file->status = SC_FILE_STATUS_UNKNOWN;
+
 	for (p = buf, length = buflen, end = buf + buflen;
 			p < end;
 			p += length, length = end - p) {
@@ -358,7 +350,7 @@ iso7816_process_fci(struct sc_card *card, struct sc_file *file,
 				/* fall through */
 			case 0x80:
 				/* determine the file size */
-				if (sc_asn1_decode_integer(p, length, &size) == 0 && size >= 0) {
+				if (sc_asn1_decode_integer(p, length, &size, 0) == 0 && size >= 0) {
 					file->size = size;
 					sc_log(ctx, "  bytes in file: %"SC_FORMAT_LEN_SIZE_T"u",
 							file->size);
@@ -387,13 +379,36 @@ iso7816_process_fci(struct sc_card *card, struct sc_file *file,
 							file->type = SC_FILE_TYPE_DF;
 							break;
 						default:
+							file->type = SC_FILE_TYPE_UNKNOWN;
 							type = "unknown";
 							break;
 					}
 					sc_log(ctx, "  type: %s", type);
 					sc_log(ctx, "  EF structure: %d", byte & 0x07);
 					sc_log(ctx, "  tag 0x82: 0x%02x", byte);
-					if (SC_SUCCESS != sc_file_set_type_attr(file, &byte, 1))
+
+					/* if possible, get additional information for non-DFs */
+					if (file->type != SC_FILE_TYPE_DF) {
+						/* max. record length for fixed- & variable-sized records */
+						if (length > 2 && byte & 0x06) {
+							file->record_length = (length > 3)
+								? bebytes2ushort(p+2)
+								: p[2];
+							sc_log(ctx, "  record length: %"SC_FORMAT_LEN_SIZE_T"u",
+								file->record_length);
+						}
+
+						/* number of records */
+						if (length > 4) {
+							file->record_count = (length > 5)
+								? bebytes2ushort(p+4)
+								: p[4];
+							sc_log(ctx, "  records: %"SC_FORMAT_LEN_SIZE_T"u",
+								file->record_count);
+						}
+					}
+
+					if (SC_SUCCESS != sc_file_set_type_attr(file, p, length))
 						sc_log(ctx, "Warning: Could not set file attributes");
 				}
 				break;
@@ -438,12 +453,48 @@ iso7816_process_fci(struct sc_card *card, struct sc_file *file,
 
 			case 0x8A:
 				if (length == 1) {
-					if (p[0] == 0x01)
-						file->status = SC_FILE_STATUS_CREATION;
-					else if (p[0] == 0x07 || p[0] == 0x05)
-						file->status = SC_FILE_STATUS_ACTIVATED;
-					else if (p[0] == 0x06 || p[0] == 0x04)
-						file->status = SC_FILE_STATUS_INVALIDATED;
+					switch (p[0]) {
+						case 0:
+							file->status =SC_FILE_STATUS_NO_INFO;
+							break;
+						case 1:
+							file->status = SC_FILE_STATUS_CREATION;
+							break;
+						case 3:
+							file->status = SC_FILE_STATUS_INITIALISATION;
+							break;
+						case 4:
+						case 6:
+							file->status = SC_FILE_STATUS_INVALIDATED;
+							break;
+						case 5:
+						case 7:
+							file->status = SC_FILE_STATUS_ACTIVATED;
+							break;
+						case 12:
+						case 13:
+						case 14:
+						case 15:
+							file->status = SC_FILE_STATUS_TERMINATION;
+							break;
+						case 2:
+							file->status = SC_FILE_STATUS_RFU_2;
+							break;
+						case 8:
+							file->status = SC_FILE_STATUS_RFU_8;
+							break;
+						case 9:
+							file->status = SC_FILE_STATUS_RFU_9;
+							break;
+						case 10:
+							file->status = SC_FILE_STATUS_RFU_10;
+							break;
+						case 11:
+							file->status = SC_FILE_STATUS_RFU_11;
+							break;
+						default:
+							file->status = SC_FILE_STATUS_PROPRIETARY;
+					}
 				}
 				break;
 
@@ -1007,7 +1058,7 @@ iso7816_decipher(struct sc_card *card,
 }
 
 
-static int
+int
 iso7816_build_pin_apdu(struct sc_card *card, struct sc_apdu *apdu,
 		struct sc_pin_cmd_data *data, u8 *buf, size_t buf_len)
 {
@@ -1335,6 +1386,8 @@ int iso7816_read_binary_sfid(sc_card_t *card, unsigned char sfid,
 			*ef_len += r;
 			break;
 		}
+		if (r == 0 || r == SC_ERROR_FILE_END_REACHED)
+			break;
 		if (r < 0) {
 			sc_debug(card->ctx, SC_LOG_DEBUG_VERBOSE, "Could not read EF.");
 			goto err;
@@ -1352,7 +1405,7 @@ int iso7816_read_binary_sfid(sc_card_t *card, unsigned char sfid,
 				*ef + *ef_len, read, 0);
 	}
 
-	r = SC_SUCCESS;
+	r = *ef_len;
 
 err:
 	return r;
@@ -1412,6 +1465,8 @@ int iso7816_write_binary_sfid(sc_card_t *card, unsigned char sfid,
 			sc_debug(card->ctx, SC_LOG_DEBUG_VERBOSE, "Could not write EF.");
 			goto err;
 		}
+		if (r == 0 || r == SC_ERROR_FILE_END_REACHED)
+			break;
 		wrote += r;
 		apdu.data += r;
 		if (wrote >= ef_len)
@@ -1420,7 +1475,7 @@ int iso7816_write_binary_sfid(sc_card_t *card, unsigned char sfid,
 		r = sc_write_binary(card, wrote, ef, write, 0);
 	}
 
-	r = SC_SUCCESS;
+	r = wrote;
 
 err:
 	return r;
@@ -1480,6 +1535,8 @@ int iso7816_update_binary_sfid(sc_card_t *card, unsigned char sfid,
 			sc_debug(card->ctx, SC_LOG_DEBUG_VERBOSE, "Could not update EF.");
 			goto err;
 		}
+		if (r == 0 || r == SC_ERROR_FILE_END_REACHED)
+			break;
 		wrote += r;
 		apdu.data += r;
 		if (wrote >= ef_len)
@@ -1488,7 +1545,7 @@ int iso7816_update_binary_sfid(sc_card_t *card, unsigned char sfid,
 		r = sc_update_binary(card, wrote, ef, write, 0);
 	}
 
-	r = SC_SUCCESS;
+	r = wrote;
 
 err:
 	return r;

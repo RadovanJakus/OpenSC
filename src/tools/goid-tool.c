@@ -154,7 +154,7 @@ soc_info(sc_context_t *ctx, sc_card_t *card)
                 && cla == SC_ASN1_TAG_UNIVERSAL && tag == SC_ASN1_TAG_INTEGER) {
             int applet_count = 0;
             /* number of applets */
-            if (SC_SUCCESS == sc_asn1_decode_integer(p, length, &applet_count)) {
+            if (SC_SUCCESS == sc_asn1_decode_integer(p, length, &applet_count, 0)) {
                 printf("SoCManager knows %d applet%s%s\n", applet_count,
                         applet_count == 1 ? "" : "s", applet_count == 0 ? "" : ":");
                 /* AID of client applet #x */
@@ -168,7 +168,7 @@ soc_info(sc_context_t *ctx, sc_card_t *card)
                     }
                     putchar('\t');
                     util_hex_dump(stdout, p, length, "");
-                    /* align with the maximum lenght of an AID */
+                    /* align with the maximum length of an AID */
                     for (i = length; i < 0x10 + 1; i++)
                         printf("  ");
 
@@ -716,7 +716,7 @@ int paccess_main(struct sc_context *ctx, sc_card_t *card, struct gengetopt_args_
                     && SC_SUCCESS == sc_asn1_read_tag(&p, ef_len,
                         &cla, &tag, &ef_len)
                     && (tag | cla) == 0x13) {
-                const char *cardid = (const char *) p;
+                const unsigned char *cardid = (const unsigned char *) p;
                 while (cardid && ef_len) {
                     if (isprint(*cardid)) {
                         printf("%c", *cardid);
@@ -750,7 +750,7 @@ int paccess_main(struct sc_context *ctx, sc_card_t *card, struct gengetopt_args_
                     && SC_SUCCESS == sc_asn1_read_tag((const u8 **) &p, ef_len,
                         &cla, &tag, &ef_len)
                     && (tag | cla) == 0x13) {
-                const char *paccessid = (const char *) p;
+                const unsigned char *paccessid = (const unsigned char *) p;
                 while (paccessid && ef_len) {
                     if (isprint(*paccessid)) {
                         printf("%c", *paccessid);

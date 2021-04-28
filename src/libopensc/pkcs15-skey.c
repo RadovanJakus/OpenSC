@@ -28,10 +28,18 @@
 #include <assert.h>
 
 /*
- * in src/libopensc/types.h SC_MAX_SUPPORTED_ALGORITHMS  defined as 8
+ * in src/libopensc/types.h SC_MAX_SUPPORTED_ALGORITHMS  defined as 16
  */
 #define C_ASN1_SUPPORTED_ALGORITHMS_SIZE (SC_MAX_SUPPORTED_ALGORITHMS + 1)
 static const struct sc_asn1_entry c_asn1_supported_algorithms[C_ASN1_SUPPORTED_ALGORITHMS_SIZE] = {
+	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
+	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
+	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
+	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
+	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
+	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
+	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
+	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
 	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
 	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
 	{ "algorithmReference", SC_ASN1_INTEGER, SC_ASN1_TAG_INTEGER, SC_ASN1_OPTIONAL, NULL, NULL },
@@ -155,21 +163,19 @@ sc_pkcs15_decode_skdf_entry(struct sc_pkcs15_card *p15card, struct sc_pkcs15_obj
 		/* Check key type. framework-pkcs15 recognizes one type per key, and AES is the only algorithm supported for
 		* SKEY_GENERIC type keys, so just check if this key is AES compatible. */
 
-		for (i = 0; i < SC_MAX_SUPPORTED_ALGORITHMS && info.algo_refs[i] != 0; i++) {
+		for (i = 0; i < SC_MAX_SUPPORTED_ALGORITHMS && info.algo_refs[i] != 0 && info.key_type == 0; i++) {
 			for (ii = 0; ii < SC_MAX_SUPPORTED_ALGORITHMS && p15card->tokeninfo != 0; ii++) {
 				if (info.algo_refs[i] == p15card->tokeninfo->supported_algos[ii].reference) {
-				    temp_oid = p15card->tokeninfo->supported_algos[ii].algo_id;
-				    temp_oid.value[8] = -1; /* strip off AES subtype octet*/
+					temp_oid = p15card->tokeninfo->supported_algos[ii].algo_id;
+					temp_oid.value[8] = -1; /* strip off AES subtype octet*/
 
-				    if (sc_compare_oid(&id_aes, &temp_oid))
-						if (info.key_type == 0)	{
-							info.key_type = CKK_AES;
-							break;
-						}
+					if (sc_compare_oid(&id_aes, &temp_oid)) {
+						info.key_type = CKK_AES;
+						break;
+					}
 				}
 			}
 		}
-
 	}
 	else if (asn1_skey_choice[1].flags & SC_ASN1_PRESENT)
 		obj->type = SC_PKCS15_TYPE_SKEY_DES;

@@ -788,13 +788,15 @@ static int sc_pkcs15emu_sc_hsm_add_cd(sc_pkcs15_card_t * p15card, u8 id) {
 	/* Try to select a related EF containing the PKCS#15 description of the data */
 	len = sizeof efbin;
 	r = read_file(p15card, fid, efbin, &len, 1);
-	LOG_TEST_RET(card->ctx, r, "Skipping optional EF.DCOD");
+	LOG_TEST_RET(card->ctx, r, "Skipping optional EF.CDF");
 
 	ptr = efbin;
 
 	memset(&obj, 0, sizeof(obj));
 	r = sc_pkcs15_decode_cdf_entry(p15card, &obj, &ptr, &len);
-	LOG_TEST_RET(card->ctx, r, "Skipping optional EF.CDOD");
+	if (obj.data == NULL && r >= SC_SUCCESS)
+		r = SC_ERROR_OBJECT_NOT_FOUND;
+	LOG_TEST_RET(card->ctx, r, "Skipping optional EF.CDF");
 
 	cert_info = (sc_pkcs15_cert_info_t *)obj.data;
 
@@ -940,6 +942,7 @@ static int sc_pkcs15emu_sc_hsm_init (sc_pkcs15_card_t * p15card)
 	assert(len >= 8);
 	len -= 5;
 
+	free(p15card->tokeninfo->serial_number);
 	p15card->tokeninfo->serial_number = calloc(len + 1, 1);
 	if (p15card->tokeninfo->serial_number == NULL)
 		LOG_FUNC_RETURN(card->ctx, SC_ERROR_OUT_OF_MEMORY);
@@ -1023,7 +1026,7 @@ static int sc_pkcs15emu_sc_hsm_init (sc_pkcs15_card_t * p15card)
 		r = sc_pin_cmd(card, &pindata, NULL);
 	}
 
-	if ((r != SC_ERROR_DATA_OBJECT_NOT_FOUND) && (r != SC_ERROR_INCORRECT_PARAMETERS))
+	if ((r != SC_ERROR_DATA_OBJECT_NOT_FOUND) && (r != SC_ERROR_INCORRECT_PARAMETERS) && (r != SC_ERROR_REF_DATA_NOT_USABLE))
 		card->caps |= SC_CARD_CAP_PROTECTED_AUTHENTICATION_PATH;
 
 
